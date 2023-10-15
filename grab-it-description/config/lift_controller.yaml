@@ -1,0 +1,3 @@
+lift_controller:
+  type: "position_controllers/JointPositionController"
+  joint: lift_joint

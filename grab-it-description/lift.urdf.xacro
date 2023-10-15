@@ -1,0 +1,1329 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+
+<xacro:macro name="lift" params="parent_link *joint_pose">
+
+<link name="lift">
+<visual>
+<origin xyz="-0.130725 0.0170854 0.782184" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.130725 0.0170854 0.782184" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.129827 0.0137172 0.742476" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.129827 0.0137172 0.742476" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0920389 0.0154514 0.784614" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0920389 0.0154514 0.784614" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.131928 0.0055144 0.785192" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.131928 0.0055144 0.785192" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0907325 0.0166478 0.782795" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0907325 0.0166478 0.782795" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0921596 -0.00355093 0.784546" rpy="-0.0523727 1.56722 1.50754" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/eccentric_spacer_6mm.stl"/>
+</geometry>
+<material name="eccentric_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0921596 -0.00355093 0.784546" rpy="-0.0523727 1.56722 1.50754" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/eccentric_spacer_6mm.stl"/>
+</geometry>
+<material name="eccentric_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0897964 0.0167793 0.7431" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0897964 0.0167793 0.7431" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.132207 0.00101113 0.785176" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.132207 0.00101113 0.785176" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0929042 0.00908335 0.744896" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0929042 0.00908335 0.744896" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0898345 0.0132796 0.743088" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0898345 0.0132796 0.743088" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.130764 0.0135856 0.782171" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.130764 0.0135856 0.782171" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.129789 0.0172169 0.742489" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.129789 0.0172169 0.742489" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0907706 0.013148 0.782783" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0907706 0.013148 0.782783" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.107222 0.000289503 0.78338" rpy="0.229377 1.55509 0.218462" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/double_tee_nut.stl"/>
+</geometry>
+<material name="double_tee_nut_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.107222 0.000289503 0.78338" rpy="0.229377 1.55509 0.218462" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/double_tee_nut.stl"/>
+</geometry>
+<material name="double_tee_nut_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.132816 0.00114623 0.745481" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.132816 0.00114623 0.745481" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.129931 0.0042178 0.742442" rpy="0.0049926 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/aluminum_spacer_6mm.stl"/>
+</geometry>
+<material name="aluminum_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.129931 0.0042178 0.742442" rpy="0.0049926 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/aluminum_spacer_6mm.stl"/>
+</geometry>
+<material name="aluminum_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0897964 0.0167793 0.7431" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0897964 0.0167793 0.7431" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0920008 0.0119516 0.784601" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0920008 0.0119516 0.784601" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.115542 0.00192352 0.78095" rpy="0.229377 1.55509 0.218462" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/double_tee_nut.stl"/>
+</geometry>
+<material name="double_tee_nut_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.115542 0.00192352 0.78095" rpy="0.229377 1.55509 0.218462" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/double_tee_nut.stl"/>
+</geometry>
+<material name="double_tee_nut_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0899379 0.00378018 0.743054" rpy="0.0049926 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/aluminum_spacer_6mm.stl"/>
+</geometry>
+<material name="aluminum_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0899379 0.00378018 0.743054" rpy="0.0049926 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/aluminum_spacer_6mm.stl"/>
+</geometry>
+<material name="aluminum_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0899488 0.00278025 0.74305" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0899488 0.00278025 0.74305" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0907325 0.0166478 0.782795" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0907325 0.0166478 0.782795" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.132864 0.00564593 0.745497" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.132864 0.00564593 0.745497" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.12986 0.0107174 0.742466" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.12986 0.0107174 0.742466" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.131994 0.011514 0.785213" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.131994 0.011514 0.785213" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="-0.0908359 0.00714842 0.782761" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0908359 0.00714842 0.782761" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0920389 0.0154514 0.784614" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0920389 0.0154514 0.784614" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.110304 -0.00206817 0.762574" rpy="1.80017 1.55509 0.218462" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_gantry_plate_20mm.stl"/>
+</geometry>
+<material name="v-slot_gantry_plate_20mm_material">
+<color rgba="0.301961 0.301961 0.301961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.110304 -0.00206817 0.762574" rpy="1.80017 1.55509 0.218462" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_gantry_plate_20mm.stl"/>
+</geometry>
+<material name="v-slot_gantry_plate_20mm_material">
+<color rgba="0.301961 0.301961 0.301961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0919681 0.00895182 0.784591" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0919681 0.00895182 0.784591" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.132032 0.0150138 0.785226" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.132032 0.0150138 0.785226" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.132153 -0.00398854 0.785158" rpy="-0.0523727 1.56722 1.50754" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/eccentric_spacer_6mm.stl"/>
+</geometry>
+<material name="eccentric_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.132153 -0.00398854 0.785158" rpy="-0.0523727 1.56722 1.50754" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/eccentric_spacer_6mm.stl"/>
+</geometry>
+<material name="eccentric_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.13293 0.0116455 0.745518" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.13293 0.0116455 0.745518" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0908033 0.0101482 0.782772" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0908033 0.0101482 0.782772" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.129893 0.00771757 0.742455" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.129893 0.00771757 0.742455" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.132897 0.00864574 0.745507" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.132897 0.00864574 0.745507" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.13055 0.00308276 0.782134" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.13055 0.00308276 0.782134" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0929369 0.0120832 0.744906" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0929369 0.0120832 0.744906" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.131961 0.0085142 0.785202" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.131961 0.0085142 0.785202" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0928716 0.00608355 0.744885" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0928716 0.00608355 0.744885" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0898672 0.0102798 0.743077" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0898672 0.0102798 0.743077" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.129931 0.0042178 0.742442" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.129931 0.0042178 0.742442" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.129942 0.00321786 0.742439" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.129942 0.00321786 0.742439" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0918974 0.00245225 0.784568" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0918974 0.00245225 0.784568" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0928335 0.00258378 0.744872" rpy="0.0049926 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/aluminum_spacer_6mm.stl"/>
+</geometry>
+<material name="aluminum_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0928335 0.00258378 0.744872" rpy="0.0049926 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/aluminum_spacer_6mm.stl"/>
+</geometry>
+<material name="aluminum_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="-0.130829 0.00758603 0.78215" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.130829 0.00758603 0.78215" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0898998 0.00727995 0.743066" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0898998 0.00727995 0.743066" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.129789 0.0172169 0.742489" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.129789 0.0172169 0.742489" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.132826 0.00214616 0.745484" rpy="0.0049926 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/aluminum_spacer_6mm.stl"/>
+</geometry>
+<material name="aluminum_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.132826 0.00214616 0.745484" rpy="0.0049926 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/aluminum_spacer_6mm.stl"/>
+</geometry>
+<material name="aluminum_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.130605 -0.00191691 0.782116" rpy="-0.0523727 1.56722 1.50754" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/eccentric_spacer_6mm.stl"/>
+</geometry>
+<material name="eccentric_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.130605 -0.00191691 0.782116" rpy="-0.0523727 1.56722 1.50754" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/eccentric_spacer_6mm.stl"/>
+</geometry>
+<material name="eccentric_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.130725 0.0170854 0.782184" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.130725 0.0170854 0.782184" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.132032 0.0150138 0.785226" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.132032 0.0150138 0.785226" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.130796 0.0105858 0.782161" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.130796 0.0105858 0.782161" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/delrin_v_wheel.stl"/>
+</geometry>
+<material name="delrin_v_wheel_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0919355 0.00595202 0.78458" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0919355 0.00595202 0.78458" rpy="0.796735 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/ball_bearing_5_x_16_x_5.stl"/>
+</geometry>
+<material name="ball_bearing_5_x_16_x_5_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.130867 0.00408626 0.782137" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.130867 0.00408626 0.782137" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.092975 0.0155829 0.744919" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.092975 0.0155829 0.744919" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.132968 0.0151453 0.745531" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.132968 0.0151453 0.745531" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.111481 -0.0161929 0.765157" rpy="1.80017 1.55509 0.218462" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x203_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x203_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.111481 -0.0161929 0.765157" rpy="1.80017 1.55509 0.218462" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x203_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x203_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0906118 -0.00235452 0.782728" rpy="-0.0523727 1.56722 1.50754" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/eccentric_spacer_6mm.stl"/>
+</geometry>
+<material name="eccentric_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0906118 -0.00235452 0.782728" rpy="-0.0523727 1.56722 1.50754" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/eccentric_spacer_6mm.stl"/>
+</geometry>
+<material name="eccentric_spacer_6mm_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.092214 0.00144874 0.784564" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.092214 0.00144874 0.784564" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0738852 -0.00929826 0.769395" rpy="-3.13802 -0.015291 -0.0109419" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/double_tee_nut.stl"/>
+</geometry>
+<material name="double_tee_nut_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0738852 -0.00929826 0.769395" rpy="-3.13802 -0.015291 -0.0109419" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/double_tee_nut.stl"/>
+</geometry>
+<material name="double_tee_nut_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.108886 -0.00810186 0.767576" rpy="-3.13802 -0.015291 -0.0109419" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/double_tee_nut.stl"/>
+</geometry>
+<material name="double_tee_nut_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.108886 -0.00810186 0.767576" rpy="-3.13802 -0.015291 -0.0109419" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/double_tee_nut.stl"/>
+</geometry>
+<material name="double_tee_nut_material">
+<color rgba="0.811765 0.858824 0.898039 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.132968 0.0151453 0.745531" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.132968 0.0151453 0.745531" rpy="-1.5658 0.774055 -0.00739724" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/nylon_insert_lock_nut_m5.stl"/>
+</geometry>
+<material name="nylon_insert_lock_nut_m5_material">
+<color rgba="0.941176 0.87451 0.678431 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0928335 0.00258378 0.744872" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0928335 0.00258378 0.744872" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.092975 0.0155829 0.744919" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.092975 0.0155829 0.744919" rpy="-1.57579 -0.774055 3.1342" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.0928226 0.00158384 0.744869" rpy="-2.52641 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0928226 0.00158384 0.744869" rpy="-2.52641 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.090874 0.00364865 0.782749" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.090874 0.00364865 0.782749" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.132826 0.00214616 0.745484" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.132826 0.00214616 0.745484" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0899379 0.00378018 0.743054" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0899379 0.00378018 0.743054" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0905574 0.00264515 0.782745" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0905574 0.00264515 0.782745" rpy="-2.36753 -0.00357011 1.55991" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/low_profile_screw_m5.stl"/>
+</geometry>
+<material name="low_profile_screw_m5_material">
+<color rgba="0.262745 0.282353 0.301961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.11246 -0.00370219 0.765004" rpy="1.80017 1.55509 0.218462" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_gantry_plate_20mm.stl"/>
+</geometry>
+<material name="v-slot_gantry_plate_20mm_material">
+<color rgba="0.301961 0.301961 0.301961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.11246 -0.00370219 0.765004" rpy="1.80017 1.55509 0.218462" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_gantry_plate_20mm.stl"/>
+</geometry>
+<material name="v-slot_gantry_plate_20mm_material">
+<color rgba="0.301961 0.301961 0.301961 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.13189 0.00201463 0.785179" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.13189 0.00201463 0.785179" rpy="-1.56569 -0.796729 -0.0145392" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/precision_shim_10_x_5_x_1.stl"/>
+</geometry>
+<material name="precision_shim_10_x_5_x_1_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+<inertial>
+<origin xyz="0.1116 0.0131001 0.529657" rpy="0 0 0"/>
+<mass value="0.72494" />
+<inertia ixx="0.15869" ixy="5.58466e-16"  ixz="-5.37764e-16" iyy="0.178986" iyz="0.000466355" izz="0.0208437" />
+</inertial>
+</link>
+
+<joint name="lift_joint" type="prismatic">
+<origin xyz="0.013 -0.0001 -0.4418688" rpy="0.00357053 -0.015291 -0.0109419" />
+<parent link="${parent_link}"/>
+<child link="lift" />
+<axis xyz="0 0 1"/>
+<limit effort="1" velocity="20" lower="-0.1" upper="0.00018"/>
+<inertial>
+<origin xyz="0.1116 0.0131001 0.529657" rpy="0 0 0"/>
+<mass value="0.72494" />
+<inertia ixx="0.15869" ixy="5.58466e-16"  ixz="-5.37764e-16" iyy="0.178986" iyz="0.000466355" izz="0.0208437" />
+</inertial>
+<joint_properties friction="0.0"/>
+</joint>
+
+ <!-- This block connects the head_swivel joint to an actuator (motor), which informs both
+  simulation and visualization of the robot -->
+  <transmission name="servo_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <actuator name="servo_motor">
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+    <joint name="lift_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+  </transmission>
+
+
+
+
+
+
+
+
+
+</xacro:macro>
+</robot>

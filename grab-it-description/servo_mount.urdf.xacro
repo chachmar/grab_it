@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+
+<xacro:macro name="servo_mount" params="parent_link *joint_pose">
+<link name="servo_mount">
+<visual>
+
+<origin xyz="0.0199222 -0.00324356 1.02378" rpy="3.13802 0.015291 3.13065" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/part_1.stl"/>
+</geometry>
+<material name="part_1_material">
+<color rgba="0.866667 0.866667 0.890196 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0199222 -0.00324356 1.02378" rpy="3.13802 0.015291 3.13065" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/part_1.stl"/>
+</geometry>
+<material name="part_1_material">
+<color rgba="0.866667 0.866667 0.890196 1.0"/>
+</material>
+</collision>
+<inertial>
+<origin xyz="0.00375031 0.0134225 0.612164" rpy="0 0 0"/>
+<mass value="2.16817" />
+<inertia ixx="0.172182" ixy="0.00022319"  ixz="-0.00124498" iyy="0.196676" iyz="0.00108361" izz="0.0253736" />
+</inertial>
+</link>
+
+<joint name="servo_mount_joint" type="fixed">
+			<parent link="${parent_link}"/>
+			<child link="servo_mount"/>
+			<xacro:insert_block name="joint_pose"/>
+			<origin xyz="0.0199222 -0.00324356 1.02378" rpy="3.13802 0.015291 3.13065" />
+			<dynamics damping="0.5" friction="1.0" />
+		</joint>
+
+</xacro:macro>
+</robot>

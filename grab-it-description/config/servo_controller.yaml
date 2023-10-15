@@ -1,0 +1,10 @@
+# Publish all joint states
+# Creates the /joint_states topic necessary in ROS
+
+
+servo_controller:
+  type: "position_controllers/JointPositionController"
+  joint: servo_joint
+ 
+
+

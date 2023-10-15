@@ -1,0 +1,84 @@
+<?xml version="1.0"?>
+<robot name="grab_it" xmlns:xacro="http://ros.org/wiki/xacro">
+  
+  <xacro:arg name="robot_name" default = "grab_it"/>
+  <xacro:arg name="base_link_frame" default="base_link"/>
+  <xacro:arg name="show_ar_tag" default="false"/>
+  <xacro:arg name="show_gripper_bar" default="true"/>
+  <xacro:arg name="show_gripper_fingers" default="true"/>
+  <xacro:arg name="use_world_frame" default="false"/>
+  <xacro:arg name="external_urdf_loc" default=""/>
+  <xacro:arg name="load_gazebo_configs" default="false"/>
+
+  <xacro:property name="urdf_loc" value="$(arg external_urdf_loc)"/>
+  <xacro:property name="pi_offset" value="0.00001"/>
+
+  <xacro:if value="$(arg load_gazebo_configs)">
+    <xacro:include filename="$(find grab_it)/config/interbotix_texture.gazebo"/>
+  </xacro:if>
+
+  <material name="interbotix_black">
+    <texture filename="package://grab_it/px150_description/meshes/interbotix_black.png"/>
+  </material>
+
+  <xacro:if value="$(arg use_world_frame)">
+    <link name="world"/>
+    <joint name="fixed" type="fixed">
+      <parent link="world"/>
+      <child link="$(arg robot_name)/$(arg base_link_frame)"/>
+    </joint>
+  </xacro:if>
+
+
+
+
+
+
+  <xacro:if value="${urdf_loc != ''}">
+    <xacro:include filename="${urdf_loc}"/>
+  </xacro:if>
+
+<xacro:include filename="$(find grab_it)/px150_description/urdf/px150.urdf.xacro" />
+<xacro:include filename="$(find grab_it)/d435i_description/urdf/_d435i.urdf.xacro" /> 
+<xacro:include filename="$(find grab_it)/create_3/urdf/create3.urdf.xacro" /> 
+<xacro:include filename="$(find grab_it)/grab-it-description/lift_frame.urdf.xacro" />
+<xacro:include filename="$(find grab_it)/grab-it-description/servo_mount.urdf.xacro" />
+<xacro:include filename="$(find grab_it)/grab-it-description/servo.urdf.xacro" />
+<xacro:include filename="$(find grab_it)/grab-it-description/lift.urdf.xacro" />
+
+
+
+
+ <xacro:lift_frame  parent_link="base_link" >
+        <origin xyz="0.08 -0.01 0.157" rpy="0 0 1.5708"/>
+    </xacro:lift_frame>
+
+ <xacro:servo_mount  parent_link="lift_frame" >
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:servo_mount>
+
+<xacro:servo  parent_link="servo_mount" >
+        <origin xyz="-0.023198 0.00884533 0.983548" rpy="-2.21036 -2.54517 2.19926" />
+    </xacro:servo>
+
+<xacro:sensor_d435i parent="servo" use_nominal_extrinsics="false">
+    <origin xyz="-0.04 0.01 -0.03" rpy="1.5708 3.1415 0"/>
+  </xacro:sensor_d435i>
+
+<xacro:lift  parent_link="lift_frame" >
+       <origin xyz="0.000481 -0.0361929 0.775157" rpy="3.1415 3.1415 1.5708" />
+    </xacro:lift>
+
+<xacro:px150>
+ 
+
+       <origin xyz="0.000481 -0.0361929 0.775157" rpy="3.1415 3.1415 1.5708" />
+    </xacro:px150>
+
+
+
+ 
+
+  
+ 
+</robot>

@@ -1,0 +1,964 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+
+<xacro:macro name="lift_frame" params="parent_link *joint_pose">
+<link name="lift_frame">
+
+
+<visual>
+<origin xyz="-0.11 0.04337 0.04" rpy="-1.42986e-17 -1.80144e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.11 0.04337 0.04" rpy="-1.42986e-17 -1.80144e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1237 -0.04589 -0.0516" rpy="3.14159 8.54867e-16 -7.09983e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x381.stl"/>
+</geometry>
+<material name="v-slot_20x20x381_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1237 -0.04589 -0.0516" rpy="3.14159 8.54867e-16 -7.09983e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x381.stl"/>
+</geometry>
+<material name="v-slot_20x20x381_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.11 0.02377 0.02" rpy="3.14159 -2.84215e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.11 0.02377 0.02" rpy="3.14159 -2.84215e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0895 -0.03589 -0.0516" rpy="-8.3503e-17 2.41964e-15 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x203.2_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x203.2_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0895 -0.03589 -0.0516" rpy="-8.3503e-17 2.41964e-15 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x203.2_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x203.2_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1332 -0.01599 0.04" rpy="-3.24804e-16 1.41984e-16 -1.19534e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1332 -0.01599 0.04" rpy="-3.24804e-16 1.41984e-16 -1.19534e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+
+
+
+
+<visual>
+<origin xyz="-0.114369 0.0166705 1.04179" rpy="1.57437 -0.015291 -0.0109419" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x40x1000_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x40x1000_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.114369 0.0166705 1.04179" rpy="1.57437 -0.015291 -0.0109419" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x40x1000_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x40x1000_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.104326 0.00659576 1.03191" rpy="-3.1263 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x203_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x203_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.104326 0.00659576 1.03191" rpy="-3.1263 0.00357011 -1.58168" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x203_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x203_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+
+
+
+
+
+
+
+<visual>
+<origin xyz="-0.10 0.04327 0.06" rpy="1.5708 -1.43084e-17 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x101.6.stl"/>
+</geometry>
+<material name="v-slot_20x20x101.6_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.10 0.04327 0.06" rpy="1.5708 -1.43084e-17 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x101.6.stl"/>
+</geometry>
+<material name="v-slot_20x20x101.6_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.11 0.04287 0.02" rpy="-3.14159 2.00525e-18 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.11 0.04287 0.02" rpy="-3.14159 2.00525e-18 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+
+
+
+
+<visual>
+<origin xyz="0.108791 0.0142286 1.04521" rpy="1.57437 -0.015291 -0.0109419" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x40x1000_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x40x1000_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.108791 0.0142286 1.04521" rpy="1.57437 -0.015291 -0.0109419" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x40x1000_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x40x1000_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<inertial>
+<origin xyz="0.1116 0.0131413 0.526884" rpy="0 0 0"/>
+<mass value="1.71398" />
+<inertia ixx="0.156612" ixy="4.7364e-16"  ixz="-4.6534e-16" iyy="0.176905" iyz="0.000435507" izz="0.0208385" />
+</inertial>
+
+
+
+
+
+
+
+<visual>
+<origin xyz="0.1332 0.02411 0.04" rpy="-3.91584e-16 -1.85838e-16 -1.90623e-16" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1332 0.02411 0.04" rpy="-3.91584e-16 -1.85838e-16 -1.90623e-16" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1237 -0.02589 -0.0416" rpy="-3.12017e-16 -4.69624e-16 -1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.2237 -0.02589 -0.0416" rpy="-3.12017e-16 -4.69624e-16 -1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1332 -0.01549 0.02" rpy="-3.14159 1.83484e-15 -1.54549e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1332 -0.01549 0.02" rpy="-3.14159 1.83484e-15 -1.54549e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1232 0.04221 0.06" rpy="1.5708 -6.2591e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x101.6.stl"/>
+</geometry>
+<material name="v-slot_20x20x101.6_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1232 0.04221 0.06" rpy="1.5708 -6.2591e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x101.6.stl"/>
+</geometry>
+<material name="v-slot_20x20x101.6_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1332 0.00361 0.04" rpy="-3.3131e-16 -1.89307e-16 -2.53078e-16" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1332 0.00361 0.04" rpy="-3.3131e-16 -1.89307e-16 -2.53078e-16" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.1546399 0.156917 1.04" rpy="3.51688e-16 -2.40342e-17 -3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/little_box_base.stl"/>
+</geometry>
+<material name="little_box_base_material">
+<color rgba="0.615686 0.811765 0.929412 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.1546399 0.156917 1" rpy="3.51688e-16 -2.40342e-17 -3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/little_box_base.stl"/>
+</geometry>
+<material name="little_box_base_material">
+<color rgba="0.615686 0.811765 0.929412 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1137 -0.02589 -0.0506" rpy="1.5708 8.91912e-18 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1137 -0.02589 -0.0506" rpy="1.5708 8.91912e-18 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="-0.1205 0.05187 0.03" rpy="3.02233e-18 1.80146e-16 -4.76107e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x76.2.stl"/>
+</geometry>
+<material name="v-slot_20x20x76.2_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.1205 0.05187 0.03" rpy="3.02233e-18 1.80146e-16 -4.76107e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x76.2.stl"/>
+</geometry>
+<material name="v-slot_20x20x76.2_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1332 0.04321 0.02" rpy="3.14159 -1.43989e-15 -2.5773e-16" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1332 0.04321 0.02" rpy="3.14159 -1.43989e-15 -2.5773e-16" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0895 -0.02589 -0.0506" rpy="1.5708 2.57922e-15 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0895 -0.02589 -0.0506" rpy="1.5708 2.57922e-15 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0895 0.31511 -0.0506" rpy="1.5708 -8.91699e-18 -7.33549e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0895 0.31511 -0.0506" rpy="1.5708 -8.91699e-18 -7.33549e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.11 0.00377 0.02" rpy="-3.14159 1.58559e-17 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.11 0.00377 0.02" rpy="-3.14159 1.58559e-17 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.11 0.02377 0.04" rpy="4.782e-18 -1.73206e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.11 0.02377 0.04" rpy="4.782e-18 -1.73206e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1232 0.05221 -0.0416" rpy="6.46724e-16 -6.28312e-16 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1232 0.05221 -0.0416" rpy="6.46724e-16 -6.28312e-16 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="0.1232 -0.01589 0.06" rpy="1.5708 -2.95739e-16 -1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x101.6.stl"/>
+</geometry>
+<material name="v-slot_20x20x101.6_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1232 -0.01589 0.06" rpy="1.5708 -2.95739e-16 -1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x101.6.stl"/>
+</geometry>
+<material name="v-slot_20x20x101.6_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+
+
+<visual>
+<origin xyz="0.10845 0.31336 -0.0816" rpy="2.99889e-16 -4.66653e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/base.stl"/>
+</geometry>
+<material name="base_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.10845 0.31336 -0.0816" rpy="2.99889e-16 -4.66653e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/base.stl"/>
+</geometry>
+<material name="base_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="-0.08725 0.31336 -0.0816" rpy="3.02925e-16 -3.92069e-16 -3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/base.stl"/>
+</geometry>
+<material name="base_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.08725 0.31336 -0.0816" rpy="3.02925e-16 -3.92069e-16 -3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/base.stl"/>
+</geometry>
+<material name="base_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="0.10845 0.31336 -0.0816" rpy="1.03324e-15 -4.432e-16 -3.13594" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/fork.stl"/>
+</geometry>
+<material name="fork_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.10845 0.31336 -0.0816" rpy="1.03324e-15 -4.432e-16 -3.13594" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/fork.stl"/>
+</geometry>
+<material name="fork_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="-0.08725 0.31336 -0.0816" rpy="3.0009e-16 -3.95649e-16 -3.13016" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/fork.stl"/>
+</geometry>
+<material name="fork_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.08725 0.31336 -0.0816" rpy="3.0009e-16 -3.95649e-16 -3.13016" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/fork.stl"/>
+</geometry>
+<material name="fork_material">
+<color rgba="0.901961 0.901961 0.901961 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="-0.08725 0.31336 -0.0816" rpy="3.0009e-16 -3.95649e-16 -3.13016" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/shaft.stl"/>
+</geometry>
+<material name="shaft_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.08725 0.31336 -0.0816" rpy="3.0009e-16 -3.95649e-16 -3.13016" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/shaft.stl"/>
+</geometry>
+<material name="shaft_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="0.10845 0.31336 -0.0816" rpy="1.03324e-15 -4.432e-16 -3.13594" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/shaft.stl"/>
+</geometry>
+<material name="shaft_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.10845 0.31336 -0.0816" rpy="1.03324e-15 -4.432e-16 -3.13594" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/shaft.stl"/>
+</geometry>
+<material name="shaft_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="0.10845 0.31336 -0.0816" rpy="8.08616e-16 -4.4667e-16 -3.13594" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/wheel.stl"/>
+</geometry>
+<material name="wheel_material">
+<color rgba="0.439216 0.47451 0.501961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.10845 0.31336 -0.0816" rpy="8.08616e-16 -4.4667e-16 -3.13594" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/wheel.stl"/>
+</geometry>
+<material name="wheel_material">
+<color rgba="0.439216 0.47451 0.501961 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="-0.08725 0.31336 -0.0816" rpy="2.99656e-16 -3.9565e-16 -3.13016" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/wheel.stl"/>
+</geometry>
+<material name="wheel_material">
+<color rgba="0.439216 0.47451 0.501961 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.08725 0.31336 -0.0816" rpy="2.99656e-16 -3.9565e-16 -3.13016" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/wheel.stl"/>
+</geometry>
+<material name="wheel_material">
+<color rgba="0.439216 0.47451 0.501961 1.0"/>
+</material>
+</collision>
+
+
+
+<visual>
+<origin xyz="-0.11 0.00327 0.04" rpy="-5.24567e-17 1.19926e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.11 0.00327 0.04" rpy="-5.24567e-17 1.19926e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+
+
+
+
+<visual>
+<origin xyz="-0.10 -0.01483 0.06" rpy="1.5708 -2.93377e-16 -4.76278e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x101.6.stl"/>
+</geometry>
+<material name="v-slot_20x20x101.6_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.10 -0.01483 0.06" rpy="1.5708 -2.93377e-16 -4.76278e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x101.6.stl"/>
+</geometry>
+<material name="v-slot_20x20x101.6_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.10 0.05327 -0.0416" rpy="-5.25802e-16 -6.0704e-17 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.10 0.05327 -0.0416" rpy="-5.25802e-16 -6.0704e-17 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.10 -0.02483 -0.0416" rpy="2.89911e-16 -1.53514e-16 -1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.10 -0.02483 -0.0416" rpy="2.89911e-16 -1.53514e-16 -1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.11 -0.01583 0.02" rpy="3.14159 -2.73807e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.11 -0.01583 0.02" rpy="3.14159 -2.73807e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+
+
+<visual>
+<origin xyz="-0.111 0.30011 -0.0716" rpy="3.62581e-16 4.96323e-16 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x243.2_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x243.2_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.111 0.30011 -0.0716" rpy="3.62581e-16 4.96323e-16 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x243.2_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x243.2_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+
+<visual>
+<origin xyz="-0.111 0.32561 -0.0716" rpy="3.60839e-16 7.28747e-16 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x243.2_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x243.2_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.111 0.32561 -0.0716" rpy="3.60839e-16 7.28747e-16 1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x243.2_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x243.2_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+
+
+
+<visual>
+<origin xyz="0.1332 0.02361 0.02" rpy="3.14159 3.96486e-17 -1.01882e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1332 0.02361 0.02" rpy="3.14159 3.96486e-17 -1.01882e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0693351 0.396743 0.003876" rpy="2.3984e-15 7.19445e-18 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/big_box_base.stl"/>
+</geometry>
+<material name="big_box_base_material">
+<color rgba="0.615686 0.811765 0.929412 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.0293351 0.396743 0.003876" rpy="2.3984e-15 7.19445e-18 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/big_box_base.stl"/>
+</geometry>
+<material name="big_box_base_material">
+<color rgba="0.615686 0.811765 0.929412 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.11 -0.01583 0.04" rpy="-5.59257e-17 1.19926e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.11 -0.01583 0.04" rpy="-5.59257e-17 1.19926e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1437 -0.02449 0.03" rpy="3.49955e-16 1.12988e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x76.2.stl"/>
+</geometry>
+<material name="v-slot_20x20x76.2_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1437 -0.02449 0.03" rpy="3.49955e-16 1.12988e-16 3.14159" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x76.2.stl"/>
+</geometry>
+<material name="v-slot_20x20x76.2_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1332 0.00361 0.02" rpy="3.14159 -1.77291e-15 -1.60482e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1332 0.00361 0.02" rpy="3.14159 -1.77291e-15 -1.60482e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1332 0.04321 0.04" rpy="-3.95053e-16 -1.85838e-16 -1.90623e-16" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1332 0.04321 0.04" rpy="-3.95053e-16 -1.85838e-16 -1.90623e-16" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1137 0.31511 -0.0506" rpy="1.5708 -2.2154e-15 -1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1137 0.31511 -0.0506" rpy="1.5708 -2.2154e-15 -1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/cast_corner_bracket.stl"/>
+</geometry>
+<material name="cast_corner_bracket_material">
+<color rgba="0.917647 0.917647 0.917647 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="-0.0995 -0.04589 -0.0516" rpy="3.14159 1.73207e-16 -6.84228e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x381.stl"/>
+</geometry>
+<material name="v-slot_20x20x381_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="-0.0995 -0.04589 -0.0516" rpy="3.14159 1.73207e-16 -6.84228e-15" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x381.stl"/>
+</geometry>
+<material name="v-slot_20x20x381_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+<visual>
+<origin xyz="0.1137 0.32511 -0.0516" rpy="7.19445e-18 -2.3984e-15 -1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x203.2_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x203.2_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</visual>
+<collision>
+<origin xyz="0.1137 0.32511 -0.0516" rpy="7.19445e-18 -2.3984e-15 -1.5708" />
+<geometry>
+<mesh filename="package://grab_it/grab-it-description/meshes/v-slot_20x20x203.2_linear_rail.stl"/>
+</geometry>
+<material name="v-slot_20x20x203.2_linear_rail_material">
+<color rgba="0.647059 0.647059 0.647059 1.0"/>
+</material>
+</collision>
+
+<inertial>
+<origin xyz="0.111708 0.0410158 0.333625" rpy="0 0 0"/>
+<mass value="2.66888" />
+<inertia ixx="0.366414" ixy="-1.63974e-05"  ixz="0.000111" iyy="0.378497" iyz="0.0291488" izz="0.050708" />
+</inertial>
+
+
+
+
+
+
+</link>
+
+<joint name="lift_frame_joint" type="fixed">
+			<parent link="${parent_link}"/>
+			<child link="lift_frame"/>
+			<xacro:insert_block name="joint_pose"/>
+			<axis xyz="0 0 0" rpy="0 0 0" />
+			<dynamics damping="0.5" friction="100.0" />
+		</joint>
+
+</xacro:macro>
+</robot>
