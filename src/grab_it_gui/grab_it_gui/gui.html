@@ -1,0 +1,2265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-store">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>grab_IT</title>
+<style>
+  :root {
+    --bg:        #0d1117;
+    --surface:   #161b22;
+    --border:    #30363d;
+    --accent:    #58a6ff;
+    --accent2:   #3fb950;
+    --drive:     #d29922;
+    --warn:      #f78166;
+    --text:      #e6edf3;
+    --muted:     #8b949e;
+    --stick-bg:  #1c2128;
+    --stick-rim: #2d333b;
+    --knob:      #388bfd;
+    --knob-act:  #79c0ff;
+    --radius:    14px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    min-height: 100dvh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    padding: max(6px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    gap: 8px;
+    touch-action: pan-y;
+    user-select: none;
+    overflow: hidden;
+  }
+  header {
+    width: 100%;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .logo { font-size: 1.15rem; font-weight: 700; letter-spacing: .04em; color: var(--accent); }
+  .logo span { color: var(--text); }
+  #header-actions { display: flex; align-items: center; gap: 8px; }
+  #guide-btn {
+    font-size: .62rem; padding: 3px 10px; border-radius: 20px;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--muted); font-family: inherit; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase; cursor: pointer;
+    touch-action: manipulation;
+  }
+  body.guide-open #guide-btn {
+    color: var(--accent); border-color: var(--accent);
+    background: rgba(88,166,255,.18);
+  }
+  #ws-status {
+    font-size: .72rem; padding: 3px 10px; border-radius: 20px;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--warn); transition: color .3s, border-color .3s;
+  }
+  #ws-status.connected { color: var(--accent2); border-color: var(--accent2); }
+  #world-badge {
+    font-size: .72rem; padding: 3px 10px; border-radius: 20px;
+    border: 1px solid var(--border); background: var(--surface);
+    font-weight: 700; letter-spacing: .08em;
+  }
+  #world-badge.real { color: var(--accent2); border-color: var(--accent2); }
+  #world-badge.sim { color: var(--accent); border-color: var(--accent); }
+
+  #guide-panel {
+    display: none;
+    width: min(560px, calc(100% - 16px));
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 14px;
+    overflow-y: auto;
+    touch-action: pan-y; user-select: text;
+    -webkit-user-select: text;
+    position: fixed;
+    z-index: 40;
+    left: 50%; transform: translateX(-50%);
+    top: max(48px, env(safe-area-inset-top));
+    bottom: max(8px, env(safe-area-inset-bottom));
+    box-shadow: 0 12px 40px rgba(0,0,0,.55);
+  }
+  body.guide-open #guide-panel { display: flex; flex-direction: column; gap: 12px; }
+  .guide-title {
+    font-size: .6rem; color: var(--muted); letter-spacing: .08em; text-transform: uppercase;
+  }
+  .guide-block h3 {
+    font-size: .68rem; color: var(--accent); letter-spacing: .06em;
+    text-transform: uppercase; margin-bottom: 6px;
+  }
+  .guide-block p, .guide-block li {
+    font-size: .68rem; color: var(--text); line-height: 1.55;
+  }
+  .guide-block p { margin-bottom: 6px; }
+  .guide-cli-label {
+    font-size: .55rem; color: var(--muted); letter-spacing: .06em;
+    text-transform: uppercase; margin: 8px 0 4px;
+  }
+  .guide-cli {
+    font-size: .58rem; color: var(--accent); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; margin: 0 0 8px; line-height: 1.5;
+    white-space: pre-wrap; overflow-x: auto; word-break: break-all;
+    font-family: inherit; user-select: text; -webkit-user-select: text;
+  }
+  .guide-block ol, .guide-block ul { padding-left: 1.2rem; margin-bottom: 6px; }
+  .guide-block li { margin-bottom: 4px; }
+  .guide-block kbd, .guide-block strong { color: var(--accent2); font-weight: 700; }
+  .guide-row {
+    display: flex; gap: 8px; font-size: .65rem; line-height: 1.45;
+    padding: 4px 0; border-bottom: 1px solid rgba(48,54,61,.45);
+  }
+  .guide-row:last-child { border-bottom: none; }
+  .guide-k { flex: 0 0 38%; color: var(--accent); font-weight: 700; }
+  .guide-v { flex: 1; color: var(--text); }
+  #guide-user, #guide-autonomous, #guide-imitation, #guide-calibration { display: none; }
+  body[data-mode="user"] #guide-user,
+  body[data-mode="autonomous"] #guide-autonomous,
+  body[data-mode="imitation"] #guide-imitation,
+  body[data-mode="calibration"] #guide-calibration { display: block; }
+
+  /* Mode menu */
+  #mode-menu {
+    width: 100%;
+    flex: 0 0 auto;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+  }
+  .mode-btn {
+    padding: 8px 6px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--muted); font-size: .58rem;
+    font-family: inherit; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    cursor: pointer; touch-action: manipulation; min-height: 40px;
+  }
+  .mode-short { display: none; }
+  .mode-btn.active {
+    border-color: var(--accent); color: var(--accent);
+    background: rgba(88,166,255,.18);
+  }
+  .mode-btn:active { background: rgba(88,166,255,.25); }
+  #arm-pose-row {
+    display: flex; gap: 8px; width: 100%; justify-content: center;
+  }
+  #arm-pose-row .pose-btn { flex: 1 1 0; min-width: 0; padding: 8px 16px; }
+
+  body:not([data-mode="autonomous"]) #nav-row,
+  body:not([data-mode="autonomous"]) #pose-row { display: none; }
+  body:not([data-mode="imitation"]) #il-row { display: none; }
+  body:not([data-mode="calibration"]) #cal-row { display: none; }
+  body:not([data-mode="user"]):not([data-mode="autonomous"]):not([data-mode="imitation"]) #grasp-row { display: none; }
+  body[data-mode="calibration"] #stick-zone { display: none; }
+  body[data-mode="calibration"] .joint-slider { display: none; }
+  body[data-mode="calibration"] #d435i-pane.grasp-target {
+    cursor: default; border-color: var(--border);
+  }
+
+  /* Cameras */
+  #camera-row {
+    width: 100%;
+    display: flex; gap: 8px;
+    align-items: stretch;
+    min-height: 0;
+  }
+  .cam-col {
+    flex: 1; min-width: 0; min-height: 0;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .cam-pane {
+    width: 100%; aspect-ratio: 4 / 3; background: #000;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    touch-action: none;
+    min-height: 0;
+  }
+  .cam-img { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+  .cam-pane.grasp-target { cursor: crosshair; border-color: var(--accent2); }
+  .cam-label {
+    position: absolute; top: 6px; left: 8px;
+    font-size: .55rem; color: var(--accent2);
+    background: rgba(0,0,0,.5); padding: 2px 7px; border-radius: 4px; letter-spacing: .06em;
+    z-index: 2;
+    max-width: calc(100% - 12px);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .cam-off { position: absolute; font-size: .65rem; color: var(--muted); z-index: 2; }
+  #grasp-crosshair {
+    position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px;
+    border: 2px solid var(--accent2); border-radius: 50%;
+    pointer-events: none; display: none; z-index: 3;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.5);
+  }
+  #grasp-crosshair::before, #grasp-crosshair::after {
+    content: ''; position: absolute; background: var(--accent2);
+  }
+  #grasp-crosshair::before { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+  #grasp-crosshair::after { height: 2px; width: 100%; top: 50%; transform: translateY(-50%); }
+  #wide-crosshair {
+    position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px;
+    border: 2px solid #58a6ff; border-radius: 50%;
+    pointer-events: none; display: none; z-index: 3;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.5);
+  }
+  #wide-crosshair::before, #wide-crosshair::after {
+    content: ''; position: absolute; background: #58a6ff;
+  }
+  #wide-crosshair::before { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+  #wide-crosshair::after { height: 2px; width: 100%; top: 50%; transform: translateY(-50%); }
+  #landing-cube, #landing-cube *, #wide-cubes, #wide-cubes *, #d435i-reach, #d435i-reach * {
+    pointer-events: none !important;
+  }
+  #d435i-reach {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    pointer-events: none; display: none; z-index: 2;
+  }
+  #d435i-reach .reach-cell {
+    fill: #1f6feb; fill-opacity: 0.42; stroke: none;
+  }
+  #landing-cube {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    pointer-events: none; display: none; z-index: 3;
+  }
+  #landing-cube line {
+    stroke: #3fb950;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+  }
+  #landing-cube .cube-far { stroke: #238636; stroke-opacity: 0.55; }
+  #landing-cube .cube-face {
+    fill: #3fb950; fill-opacity: 0.38; stroke: #3fb950; stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+  }
+  #landing-cube .cube-grip { stroke: #ff4dff; }
+  #landing-cube .cube-grip.cube-far { stroke: #cc33cc; stroke-opacity: 0.55; }
+  #landing-cube .cube-grip-face {
+    fill: none; stroke: #ff4dff; stroke-width: 1.8;
+    vector-effect: non-scaling-stroke;
+  }
+  #landing-cube .cube-arrow-red, #wide-cubes .cube-arrow-red {
+    stroke: #f85149; fill: #f85149; stroke-width: 2.4;
+    stroke-linecap: round; vector-effect: non-scaling-stroke;
+  }
+  #landing-cube .cube-arrow-blue, #wide-cubes .cube-arrow-blue {
+    stroke: #1f6feb; fill: #1f6feb; stroke-width: 2.4;
+    stroke-linecap: round; vector-effect: non-scaling-stroke;
+  }
+  #wide-cubes {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    pointer-events: none; display: none; z-index: 3;
+  }
+  #wide-cubes line {
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+  }
+  #wide-cubes .cube-obj { stroke: #3fb950; }
+  #wide-cubes .cube-obj.cube-far { stroke: #238636; stroke-opacity: 0.55; }
+  #wide-cubes .cube-grip { stroke: #ff4dff; }
+  #wide-cubes .cube-grip.cube-far { stroke: #cc33cc; stroke-opacity: 0.55; }
+  #wide-cubes .cube-grip-face {
+    fill: none; stroke: #ff4dff; stroke-width: 1.8;
+    vector-effect: non-scaling-stroke;
+  }
+  #wide-cubes .cube-obj-face {
+    fill: #3fb950; fill-opacity: 0.38; stroke: #3fb950; stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+  }
+  #wide-cubes .cube-ring, #landing-cube .cube-ring {
+    fill: none; stroke: #ffd33d; stroke-width: 2.4;
+    vector-effect: non-scaling-stroke;
+  }
+  #wide-cubes .cube-ring-dot, #landing-cube .cube-ring-dot {
+    fill: #ffd33d; stroke: none;
+  }
+  #wide-cubes .cube-reproj {
+    fill: none; stroke: #d2a8ff; stroke-width: 2.0;
+    vector-effect: non-scaling-stroke;
+  }
+  #wide-cubes .cube-reproj-dot {
+    fill: #d2a8ff; stroke: none;
+  }
+  #wide-cubes .bbox-obj {
+    fill: rgba(63, 185, 80, 0.18); stroke: #3fb950; stroke-width: 2.2;
+    vector-effect: non-scaling-stroke;
+  }
+  #wide-cubes .bbox-jaw {
+    fill: none; stroke: #ff4dff; stroke-width: 2.2;
+    vector-effect: non-scaling-stroke;
+  }
+  #landing-cube .cube-click {
+    fill: none; stroke: #3fb950; stroke-width: 2.2;
+    vector-effect: non-scaling-stroke;
+  }
+  #landing-cube .cube-click-dot {
+    fill: #3fb950; stroke: none;
+  }
+  #wide-cubes .cube-click {
+    fill: none; stroke: #58a6ff; stroke-width: 2.2;
+    vector-effect: non-scaling-stroke;
+  }
+  #wide-cubes .cube-click-dot {
+    fill: #58a6ff; stroke: none;
+  }
+
+  /* Joint readout */
+  #joint-panel {
+    width: 100%;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 8px 14px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 3px 20px;
+  }
+  .joint-row { display: flex; justify-content: space-between; font-size: .72rem; }
+  .joint-name { color: var(--muted); }
+  .joint-val  { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+
+  /* Sliders under each camera (same width as that pane) */
+  .cam-slider {
+    width: 100%;
+    flex-shrink: 0;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 8px 10px;
+    display: flex; align-items: center; gap: 8px;
+    box-sizing: border-box;
+  }
+  .cam-slider .g-label {
+    font-size: .58rem; color: var(--muted); letter-spacing: .06em;
+    text-transform: uppercase; flex-shrink: 0;
+  }
+  .gripper-slider {
+    -webkit-appearance: none; appearance: none;
+    flex: 1; height: 10px; border-radius: 6px;
+    background: var(--stick-bg); border: 1px solid var(--border); outline: none; cursor: pointer;
+  }
+  .gripper-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, var(--knob-act), var(--knob));
+    cursor: pointer; box-shadow: 0 2px 8px rgba(56,139,253,.45);
+  }
+  .gripper-slider::-moz-range-thumb {
+    width: 26px; height: 26px; border-radius: 50%; border: none; background: var(--knob); cursor: pointer;
+  }
+  #gripper-val, #pan-val { font-size: .62rem; color: var(--accent); min-width: 54px; text-align: right; flex-shrink: 0; }
+
+  /* Stick zone - 3 sticks */
+  #stick-zone {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    width: 100%; gap: 8px;
+  }
+  .stick-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+  .stick-label { font-size: .64rem; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+  .stick-outer {
+    width: 100%; max-width: 180px; aspect-ratio: 1;
+    height: auto;
+    border-radius: 50%; background: var(--stick-bg);
+    border: 2px solid var(--stick-rim); position: relative; cursor: pointer;
+    box-shadow: inset 0 2px 12px rgba(0,0,0,.4);
+    touch-action: none;
+  }
+  .stick-outer.drive { border-color: rgba(210,153,34,.4); }
+  .stick-outer::before, .stick-outer::after {
+    content: ''; position: absolute; background: var(--stick-rim); border-radius: 2px;
+  }
+  .stick-outer::before { width: 1px; height: 60%; top: 20%; left: 50%; transform: translateX(-50%); }
+  .stick-outer::after  { height: 1px; width: 60%; left: 20%; top: 50%; transform: translateY(-50%); }
+  .stick-knob {
+    width: 38%; height: 38%; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, var(--knob-act), var(--knob));
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    box-shadow: 0 2px 10px rgba(56,139,253,.45); transition: width .05s, height .05s; pointer-events: none;
+  }
+  .stick-outer.drive .stick-knob {
+    background: radial-gradient(circle at 35% 35%, #e3b341, var(--drive));
+    box-shadow: 0 2px 10px rgba(210,153,34,.45);
+  }
+  .stick-outer.active .stick-knob { width: 42%; height: 42%; }
+  .axis-label { position: absolute; font-size: .5rem; color: var(--muted); pointer-events: none; }
+  .axis-top { top: 4px; left: 50%; transform: translateX(-50%); }
+  .axis-bottom { bottom: 4px; left: 50%; transform: translateX(-50%); }
+  .axis-left { left: 4px; top: 50%; transform: translateY(-50%); }
+  .axis-right { right: 4px; top: 50%; transform: translateY(-50%); }
+
+  /* Named nav + pose buttons */
+  #nav-row {
+    display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+    width: 100%; margin-top: 4px;
+  }
+  #nav-row select {
+    width: 100%; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    font-family: inherit; font-size: .75rem;
+  }
+  #go-btn, #cancel-nav-btn, #restart-nav-btn {
+    padding: 8px 16px; border-radius: 8px; border: 1px solid var(--accent);
+    background: rgba(88,166,255,.12); color: var(--accent); font-size: .68rem;
+    font-family: inherit; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    cursor: pointer; touch-action: manipulation;
+  }
+  #go-btn:active { background: rgba(88,166,255,.25); }
+  #nav-btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  #nav-btn-row > button { flex: 1 1 140px; }
+  #cancel-nav-btn {
+    border-color: var(--warn); color: var(--warn);
+    background: rgba(247,129,102,.10);
+  }
+  #cancel-nav-btn:active { background: rgba(247,129,102,.22); }
+  #restart-nav-btn {
+    border-color: var(--drive); color: var(--drive);
+    background: rgba(210,153,34,.10);
+  }
+  #restart-nav-btn:active { background: rgba(210,153,34,.22); }
+  #nav-status {
+    font-size: .62rem; color: var(--muted); min-height: 1.1em; text-align: center;
+  }
+  #grasp-row, #cal-row {
+    display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+    width: 100%;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 14px;
+  }
+  #grasp-row .grasp-title, #cal-row .grasp-title {
+    font-size: .6rem; color: var(--muted); letter-spacing: .08em; text-transform: uppercase;
+  }
+  #grasp-btn-row, #handoff-btn-row { display: flex; gap: 8px; flex-wrap: nowrap; }
+  #grasp-btn-row > button, #handoff-btn-row > button { flex: 1 1 0; min-width: 0; }
+  #grasp-cancel-row, #teach-row, #cal-btn-row, #cal-run-row { display: flex; justify-content: center; gap: 8px; }
+  #grasp-cancel-row #cancel-grasp-btn,
+  #teach-row #teach-free-btn { flex: 0 1 240px; min-width: 140px; width: 46%; }
+  #cal-run-row { align-items: center; margin-top: 6px; flex-wrap: wrap; }
+  #cal-n {
+    width: 4.2rem; background: var(--stick-bg); color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 4px;
+    text-align: center; padding: 4px 6px; outline: none;
+  }
+  #cal-status {
+    text-align: center; font-size: .7rem; color: var(--muted);
+    margin: 6px 8px 4px; min-height: 1.1em;
+  }
+  #cal-btn-row > button, #cal-sweep-btn {
+    padding: 8px 8px; border-radius: 8px; border: 1px solid var(--accent);
+    background: rgba(88,166,255,.12); color: var(--accent); font-size: .58rem;
+    font-family: inherit; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    cursor: pointer; touch-action: manipulation; flex: 1 1 0; min-width: 0;
+  }
+  #grasp-btn, #cancel-grasp-btn, #unlock-pan-btn, #handoff-grab-btn, #handoff-release-btn,
+  #arm-pose-row #home-btn, #arm-pose-row #sleep-btn {
+    padding: 8px 8px; border-radius: 8px; border: 1px solid var(--accent2);
+    background: rgba(63,185,80,.12); color: var(--accent2); font-size: .62rem;
+    font-family: inherit; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    cursor: pointer; touch-action: manipulation;
+  }
+  #grasp-btn:disabled { opacity: .4; cursor: not-allowed; }
+  #grasp-btn:active { background: rgba(63,185,80,.25); }
+  #cancel-grasp-btn {
+    border-color: var(--warn); color: var(--warn);
+    background: rgba(247,129,102,.10);
+  }
+  #teach-free-btn {
+    padding: 8px 8px; border-radius: 8px; border: 1px solid var(--accent);
+    background: rgba(88,166,255,.12); color: var(--accent); font-size: .62rem;
+    font-family: inherit; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    cursor: pointer; touch-action: manipulation;
+  }
+  #teach-free-btn.live { background: var(--accent); color: #0d1117; }
+  body.teach-free #stick-arm1, body.teach-free #stick-arm2,
+  body.teach-free .joint-slider { opacity: .35; pointer-events: none; }
+  #unlock-pan-btn {
+    border-color: var(--drive); color: var(--drive);
+    background: rgba(210,153,34,.10);
+  }
+  #arm-pose-row #home-btn, #arm-pose-row #sleep-btn {
+    border-color: var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font-weight: 600;
+    padding: 8px 8px;
+    font-size: .62rem;
+  }
+  #arm-pose-row #home-btn:active, #arm-pose-row #sleep-btn:active {
+    color: var(--accent); border-color: var(--accent); background: rgba(88,166,255,.1);
+  }
+  #handoff-grab-btn {
+    border-color: var(--accent2); color: var(--accent2);
+    background: rgba(63,185,80,.12);
+  }
+  #handoff-release-btn {
+    border-color: var(--accent); color: var(--accent);
+    background: rgba(88,166,255,.12);
+  }
+  #handoff-grab-btn:disabled, #handoff-release-btn:disabled {
+    opacity: .4; cursor: not-allowed;
+  }
+  #grasp-status, #il-status {
+    font-size: .62rem; color: var(--muted); min-height: 1.1em; text-align: center;
+  }
+  #il-row {
+    display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+    width: 100%;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 14px;
+  }
+  #il-row .grasp-title {
+    font-size: .6rem; color: var(--muted); letter-spacing: .08em; text-transform: uppercase;
+  }
+  #il-btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  #il-btn-row > button { flex: 1 1 0; min-width: 0; }
+  #il-rec-btn, #il-save-btn, #il-discard-btn, #il-play-btn, #il-replay-btn, #il-stop-btn {
+    padding: 8px 8px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--muted); font-size: .62rem;
+    font-family: inherit; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    cursor: pointer; touch-action: manipulation;
+  }
+  #il-rec-btn { border-color: #f85149; color: #f85149; background: rgba(248,81,73,.10); }
+  #il-rec-btn.live { background: #f85149; color: #0d1117; }
+  #il-save-btn { border-color: var(--accent2); color: var(--accent2); background: rgba(63,185,80,.12); }
+  #il-discard-btn, #il-stop-btn { border-color: var(--warn); color: var(--warn); background: rgba(247,129,102,.10); }
+  #il-play-btn { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.12); }
+  #il-play-btn.live { background: rgba(88,166,255,.35); }
+  #il-replay-btn { border-color: #d2a8ff; color: #d2a8ff; background: rgba(210,168,255,.12); }
+  #il-act-row { display: flex; align-items: center; gap: 8px; }
+  #il-act-row label {
+    font-size: .62rem; font-weight: 700; letter-spacing: .08em; color: var(--muted);
+  }
+  #il-collection-row { display: flex; align-items: center; gap: 8px; }
+  #il-collection-label {
+    flex: 1; min-width: 0; font-size: .68rem; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #il-take-count {
+    font-size: .68rem; font-weight: 700; letter-spacing: .04em;
+    color: var(--accent2); border: 1px solid var(--accent2);
+    border-radius: 20px; padding: 2px 8px; white-space: nowrap;
+  }
+  #il-collection-btn {
+    padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--muted); font-size: .62rem;
+    font-family: inherit; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    cursor: pointer;
+  }
+  #il-auto-row { display: flex; align-items: center; gap: 8px; }
+  #il-auto-row label {
+    font-size: .62rem; font-weight: 700; letter-spacing: .08em; color: var(--muted);
+  }
+  #il-auto-count, #il-train-steps {
+    width: 4.6rem; font: inherit; font-size: .68rem;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 8px;
+  }
+  #il-train-btn {
+    padding: 6px 10px; border-radius: 8px; border: 1px solid var(--accent2);
+    background: rgba(63,185,80,.12); color: var(--accent2); font-size: .62rem;
+    font-family: inherit; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    cursor: pointer;
+  }
+  #il-train-status {
+    flex: 1; min-width: 8rem; font-size: .68rem; color: var(--accent2);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  body.il-playing #stick-arm1, body.il-playing #stick-arm2 { opacity: .35; pointer-events: none; }
+  #pan-slider:disabled { opacity: .45; }
+  #pose-row { display: flex; gap: 10px; margin-top: 2px; flex-wrap: wrap; justify-content: center; }
+  .pose-btn {
+    padding: 6px 16px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--muted); font-size: .62rem;
+    font-family: inherit; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    cursor: pointer; touch-action: manipulation;
+  }
+  .pose-btn:active { color: var(--accent); border-color: var(--accent); background: rgba(88,166,255,.1); }
+  footer { font-size: .6rem; color: var(--muted); text-align: center; line-height: 1.6; width: 100%; }
+
+  #health-panel {
+    width: 100%;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 14px; margin-top: 4px;
+  }
+  .health-title { font-size: .6rem; color: var(--muted); letter-spacing: .08em; margin-bottom: 8px; }
+  .health-row {
+    display: flex; align-items: center; gap: 10px; padding: 4px 0;
+    border-bottom: 1px solid rgba(48,54,61,.4);
+  }
+  .health-row:last-child { border-bottom: none; }
+  .health-oval {
+    width: 18px; height: 12px; border-radius: 6px; flex-shrink: 0;
+    background: #444; box-shadow: 0 0 6px rgba(0,0,0,.4); transition: background .3s, box-shadow .3s;
+  }
+  .health-oval.green  { background: var(--accent2); box-shadow: 0 0 8px rgba(63,185,80,.6); }
+  .health-oval.orange { background: var(--drive);   box-shadow: 0 0 8px rgba(210,153,34,.6); }
+  .health-oval.red    { background: var(--warn);    box-shadow: 0 0 10px rgba(247,129,102,.7); }
+  .health-oval.unknown{ background: #444; }
+  .health-name { font-size: .68rem; color: var(--text); flex: 1; }
+  .health-temp { font-size: .62rem; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 42px; text-align: right; }
+  .reboot-btn {
+    font-size: .55rem; font-family: inherit; font-weight: 600; letter-spacing: .04em;
+    padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--muted); cursor: pointer; text-transform: uppercase;
+  }
+  .reboot-btn:active { color: var(--warn); border-color: var(--warn); }
+
+  .health-oval.blocked {
+    background: #a371f7;
+    box-shadow: 0 0 10px rgba(163,113,247,.8);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+  .blocked-tag {
+    font-size: .5rem; color: #a371f7; font-weight: 700;
+    letter-spacing: .05em; margin-left: 4px;
+  }
+
+  .joint-val { cursor: pointer; }
+  .joint-val:hover { text-decoration: underline dotted; }
+  .angle-input {
+    width: 60px; font-family: inherit; font-size: .72rem;
+    background: var(--stick-bg); color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 4px;
+    text-align: right; padding: 1px 4px; outline: none;
+  }
+
+  .joint-val { cursor: pointer; }
+  .joint-val:hover { text-decoration: underline dotted; }
+  .angle-input {
+    width: 60px; font-family: inherit; font-size: .72rem;
+    background: var(--stick-bg); color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 4px;
+    text-align: right; padding: 1px 4px; outline: none;
+  }
+
+  #stage {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  #ctrl-col {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 4px;
+  }
+
+  /* Phone / narrow: keep cameras 4:3, scroll controls under them */
+  @media (max-width: 899px) {
+    .mode-full { display: none; }
+    .mode-short { display: inline; }
+    .mode-btn { font-size: .52rem; letter-spacing: .04em; padding: 8px 4px; }
+    .guide-k { flex-basis: 34%; }
+    footer { display: none; }
+    #camera-row { flex: 0 1 auto; max-height: 42dvh; }
+    .cam-pane { max-height: calc(42dvh - 44px); }
+  }
+
+  /* Phone landscape: cameras + controls side by side, fill the screen */
+  @media (orientation: landscape) and (max-height: 560px) {
+    body { gap: 4px; padding: 4px max(4px, env(safe-area-inset-right)) 4px max(4px, env(safe-area-inset-left)); }
+    header { min-height: 0; }
+    .logo { font-size: 1rem; }
+    #mode-menu { gap: 4px; }
+    .mode-btn { min-height: 32px; padding: 4px; }
+    #stage {
+      flex-direction: row;
+      align-items: stretch;
+    }
+    #camera-row { flex: 1 1 0; max-height: none; min-width: 0; }
+    .cam-pane { aspect-ratio: unset; flex: 1; max-height: none; }
+    .cam-col { min-height: 0; height: 100%; }
+    #ctrl-col { flex: 1 1 0; max-width: none; min-width: 0; }
+    #guide-panel { width: min(480px, 50vw); left: auto; right: 8px; transform: none; }
+  }
+
+  /* Tablet / desktop: cameras fill leftover height, controls in a side column */
+  @media (min-width: 900px) {
+    #stage {
+      flex-direction: row;
+      align-items: stretch;
+    }
+    #camera-row {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+    .cam-col { height: 100%; }
+    .cam-col { min-height: 0; }
+    .cam-pane {
+      flex: 1 1 auto;
+      aspect-ratio: unset;
+    }
+    #ctrl-col {
+      flex: 1 1 0;
+      max-width: none;
+      min-width: 0;
+    }
+    #guide-panel {
+      left: auto; right: max(8px, env(safe-area-inset-right));
+      transform: none;
+      width: min(480px, 50vw);
+      top: max(8px, env(safe-area-inset-top));
+    }
+    .mode-btn { font-size: .62rem; }
+  }
+</style>
+</head>
+<body data-mode="user">
+
+<header>
+  <div class="logo">grab_<span>IT</span></div>
+  <div id="header-actions">
+    <button type="button" id="guide-btn" aria-expanded="false" aria-controls="guide-panel">Guide</button>
+    <div id="world-badge" class="real">REAL</div>
+    <div id="ws-status">● OFFLINE</div>
+  </div>
+</header>
+
+<nav id="mode-menu" aria-label="UI mode">
+  <button type="button" class="mode-btn active" data-mode="user"><span class="mode-full">User Control</span><span class="mode-short">User</span></button>
+  <button type="button" class="mode-btn" data-mode="autonomous"><span class="mode-full">Autonomous</span><span class="mode-short">Auto</span></button>
+  <button type="button" class="mode-btn" data-mode="imitation"><span class="mode-full">Imitation</span><span class="mode-short">IL</span></button>
+  <button type="button" class="mode-btn" data-mode="calibration"><span class="mode-full">Calibration</span><span class="mode-short">Cal</span></button>
+</nav>
+
+<section id="guide-panel" aria-label="Operator guide">
+  <div class="guide-title">Operator guide · current mode</div>
+
+  <div class="guide-block" id="guide-always">
+    <h3>Always on screen</h3>
+    <div class="guide-row"><span class="guide-k">D435i</span><span class="guide-v">Depth camera. Blue = in reach. Green cube = planned grasp. Click to pick a point (not in Calibration).</span></div>
+    <div class="guide-row"><span class="guide-k">WIDE</span><span class="guide-v">Jaw camera preview only. Do not click for a pose.</span></div>
+    <div class="guide-row"><span class="guide-k">Cam Pan</span><span class="guide-v">Pan the D435i. Locked during a grasp until Unlock pan.</span></div>
+    <div class="guide-row"><span class="guide-k">Gripper</span><span class="guide-v">Open / close. Spacebar toggles.</span></div>
+    <div class="guide-row"><span class="guide-k">HOME / SLEEP</span><span class="guide-v">Arm poses. Keys H and Z.</span></div>
+    <div class="guide-row"><span class="guide-k">Servo status</span><span class="guide-v">Green / orange / red oval + temp. Reboot drops torque briefly.</span></div>
+    <p>Header ONLINE means the websocket is connected. Unavailable cameras mean the MJPEG relay is down.</p>
+    <div class="guide-cli-label">GUI on AGX (Isaac container)</div>
+    <pre class="guide-cli">bash /workspaces/isaac_ros-dev/agx_bringup.sh
+# or full session (nav + GUI + RViz):
+bash /workspaces/isaac_ros-dev/grabit_session.sh</pre>
+    <p>Nano cameras + arm must already be up (<strong>/root/nano_bringup.sh</strong> in the Nano container).</p>
+  </div>
+
+  <div class="guide-block" id="guide-user">
+    <h3>User Control</h3>
+    <p>Teleop the arm and base, then click-to-grasp.</p>
+    <div class="guide-row"><span class="guide-k">Arm · Base</span><span class="guide-v">Shoulder up/down, waist left/right. Keys W/S and A/D.</span></div>
+    <div class="guide-row"><span class="guide-k">Drive</span><span class="guide-v">Forward and turn. Arrow keys. Cancel Nav2 first — it shares cmd_vel.</span></div>
+    <div class="guide-row"><span class="guide-k">Arm · Wrist</span><span class="guide-v">Wrist angle / rotate. Keys I/K and J/L.</span></div>
+    <p>Tap a joint degree to type an angle. Sliders match the sticks.</p>
+    <p><strong>Click-to-grasp</strong> needs MoveIt + grasp_from_click on the AGX (Isaac container). Nano cameras + arm already up:</p>
+    <div class="guide-cli-label">Launch grasp stack</div>
+    <pre class="guide-cli">bash /workspaces/isaac_ros-dev/scripts/grabit_arm_bringup.sh</pre>
+    <p>That starts robot_description, MoveIt, and <strong>grasp_from_click</strong>. If MoveIt is already running and you only need the grasp node:</p>
+    <pre class="guide-cli">bash /workspaces/isaac_ros-dev/scripts/grasp_bringup.sh</pre>
+    <ol>
+      <li>Click the object in D435i. Wait for the green cube and XYZ.</li>
+      <li><strong>Grasp at point</strong> — open, approach the click, then the scripted pinch closes (load or a foam stall). Holding the pole is success. The arm does not lift. Pan locks. The shoulder does not fold back. One 1 cm retry if the first close misses.</li>
+      <li><strong>Cancel</strong> aborts. <strong>Unlock pan</strong> frees the pan slider.</li>
+    </ol>
+    <div class="guide-row"><span class="guide-k">Grab object</span><span class="guide-v">Handoff: hold pose, open gripper (jaw camera).</span></div>
+    <div class="guide-row"><span class="guide-k">Release object</span><span class="guide-v">Open and return toward Home.</span></div>
+  </div>
+
+  <div class="guide-block" id="guide-autonomous">
+    <h3>Autonomous</h3>
+    <p>Same teleop and click-to-grasp as User Control, plus nav and dock. Also launch the grasp stack if you will Grasp at point.</p>
+    <div class="guide-cli-label">Nav2 on AGX (Isaac container)</div>
+    <pre class="guide-cli">bash /workspaces/isaac_ros-dev/nav_bringup.sh
+# or nav + GUI together:
+bash /workspaces/isaac_ros-dev/grabit_session.sh</pre>
+    <p>Prereqs: existing map (<strong>remap_map.sh</strong> / <strong>mapping_bringup.sh</strong>), Nano cameras, Create 3 undocked on domain 5.</p>
+    <ol>
+      <li>Pick a location (kitchen, living_room, trash, dock_area, …).</li>
+      <li><strong>Go to location</strong> — confirm the dialog.</li>
+      <li><strong>Cancel goal</strong> before taking over with the Drive stick.</li>
+      <li><strong>Restart nav</strong> if Nav2 is wedged.</li>
+    </ol>
+    <div class="guide-row"><span class="guide-k">DOCK / UNDOCK</span><span class="guide-v">Create 3 domain 5. Confirm the dialog. Stop extra domain-5 clients first.</span></div>
+    <div class="guide-cli-label">Save current map pose as a named location</div>
+    <pre class="guide-cli">bash /workspaces/isaac_ros-dev/scripts/save_named_location.sh &lt;name&gt;</pre>
+  </div>
+
+  <div class="guide-block" id="guide-imitation">
+    <h3>Imitation</h3>
+    <p>Collect and replay tabletop picks. Same teleop and click-to-grasp as User Control. If status stays “Recorder idle”, the recorder is not running.</p>
+    <div class="guide-cli-label">1. AGX host → Isaac container</div>
+    <pre class="guide-cli">docker exec -it -u admin -w /workspaces/isaac_ros-dev isaac_ros_dev-aarch64-container bash</pre>
+    <div class="guide-cli-label">2. Record (leave this running — it sources the workspace)</div>
+    <pre class="guide-cli">bash /workspaces/isaac_ros-dev/scripts/il_record.sh</pre>
+    <p>Do not run bare <strong>ros2 launch</strong> in a fresh shell — Humble alone cannot see <strong>grab_it_il</strong>. The script sources <strong>install/setup.bash</strong> for you.</p>
+    <p>Oracle demos from Grasp at point also need the grasp stack (<strong>grabit_arm_bringup.sh</strong>).</p>
+    <div class="guide-cli-label">3. Play (second container shell; GUI STOP armed)</div>
+    <pre class="guide-cli">bash /workspaces/isaac_ros-dev/scripts/il_play.sh
+# optional ACT checkpoint:
+bash /workspaces/isaac_ros-dev/scripts/il_play.sh \
+  /workspaces/isaac_ros-dev/datasets/lerobot/outputs/act_tabletop_pick/checkpoints/last/pretrained_model</pre>
+    <p>No checkpoint → open-loop replay of the latest episode.</p>
+    <div class="guide-cli-label">Manual launch (only if the scripts are missing)</div>
+    <pre class="guide-cli">source /opt/ros/humble/setup.bash
+source /workspaces/isaac_ros-dev/install/setup.bash
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export ROS_DOMAIN_ID=0
+unset CYCLONEDDS_URI
+export FASTRTPS_DEFAULT_PROFILES_FILE=/workspaces/isaac_ros-dev/rtabmap_profile.xml
+ros2 launch grab_it_il record_demos.launch.py</pre>
+    <div class="guide-cli-label">4. Train (AGX host, not the container)</div>
+    <pre class="guide-cli">source ~/lerobot-venv/bin/activate
+bash ~/dev-ws/scripts/il_smoke.sh</pre>
+    <div class="guide-row"><span class="guide-k">REC</span><span class="guide-v">Start an episode. Drive with sticks or run Grasp at point.</span></div>
+    <div class="guide-row"><span class="guide-k">SAVE</span><span class="guide-v">Write the episode. A finished click-to-grasp is tagged oracle.</span></div>
+    <div class="guide-row"><span class="guide-k">DISCARD</span><span class="guide-v">Drop the take.</span></div>
+    <div class="guide-row"><span class="guide-k">PLAY</span><span class="guide-v">Run the policy (or latest episode). Arm sticks ignored while playing.</span></div>
+    <div class="guide-row"><span class="guide-k">STOP</span><span class="guide-v">Stop recording or playback.</span></div>
+    <p>Episodes: <strong>/workspaces/isaac_ros-dev/datasets/tabletop_pick/</strong>. Aim for 30–50 successful picks.</p>
+  </div>
+
+  <div class="guide-block" id="guide-calibration">
+    <h3>Calibration</h3>
+    <p>Teach-cal for click-to-grasp. D435i clicks do not send a grasp point.</p>
+    <div class="guide-cli-label">Launch teach-cal (Isaac container)</div>
+    <pre class="guide-cli">bash /workspaces/isaac_ros-dev/scripts/calibration/teach_cal_bringup.sh</pre>
+    <ol>
+      <li><strong>Free arm</strong> — torque off. Support the arm by hand.</li>
+      <li>Move the gripper tip to the landmark.</li>
+      <li><strong>Hold arm</strong> (same button) — torque on.</li>
+      <li><strong>Save tip pose</strong>.</li>
+      <li><strong>Sleep→taught</strong> to check (clear the workspace).</li>
+      <li>Set Samples (2–40) and <strong>Run pan cal</strong>. Arm stays at the taught tip; pan sweeps.</li>
+      <li><strong>Abort cal</strong> to stop a sweep or goto.</li>
+    </ol>
+    <p>HOME / SLEEP still work. Sticks are hidden.</p>
+    <div class="guide-cli-label">Apply a finished sweep</div>
+    <pre class="guide-cli">python3 /workspaces/isaac_ros-dev/scripts/calibration/grasp_cal_analyze.py teach_cal.jsonl</pre>
+  </div>
+
+  <div class="guide-block" id="guide-keys">
+    <h3>Keyboard</h3>
+    <div class="guide-row"><span class="guide-k">W/S A/D</span><span class="guide-v">Shoulder, waist</span></div>
+    <div class="guide-row"><span class="guide-k">I/K J/L</span><span class="guide-v">Wrist angle, rotate</span></div>
+    <div class="guide-row"><span class="guide-k">Arrows</span><span class="guide-v">Drive</span></div>
+    <div class="guide-row"><span class="guide-k">Space</span><span class="guide-v">Toggle gripper</span></div>
+    <div class="guide-row"><span class="guide-k">H / Z</span><span class="guide-v">Home / Sleep</span></div>
+  </div>
+</section>
+
+<!-- Cameras + controls -->
+<div id="stage">
+<div id="camera-row">
+  <div class="cam-col">
+    <div class="cam-pane grasp-target" id="d435i-pane" title="Click object to grasp">
+      <span class="cam-label">D435i · CLICK · BLUE = OBJECT IN REACH · GREEN = CUBE</span>
+      <span class="cam-off" id="camera-off">connecting…</span>
+      <img id="camera" class="cam-img" alt="" />
+      <svg id="d435i-reach" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+      <div id="grasp-crosshair"></div>
+      <svg id="landing-cube" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true"></svg>
+    </div>
+    <div class="cam-slider" id="pan-wrap">
+      <span class="g-label">Cam&nbsp;Pan</span>
+      <input type="range" id="pan-slider" class="gripper-slider" min="0" max="100" value="50" step="1">
+      <span id="pan-val">167°</span>
+    </div>
+  </div>
+  <div class="cam-col">
+    <div class="cam-pane" id="wide-pane" title="Jaw camera — live video + green cube preview, not used for pose">
+      <span class="cam-label">WIDE · PREVIEW</span>
+      <span class="cam-off" id="wide-off">connecting…</span>
+      <img id="wide" class="cam-img" alt="" />
+      <div id="wide-crosshair"></div>
+      <svg id="wide-cubes" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true"></svg>
+    </div>
+    <div class="cam-slider" id="gripper-wrap">
+      <span class="g-label">Gripper</span>
+      <input type="range" id="gripper-slider" class="gripper-slider" min="0" max="100" value="100" step="1">
+      <span id="gripper-val">OPEN</span>
+    </div>
+  </div>
+</div>
+
+<div id="ctrl-col">
+<div id="arm-pose-row">
+  <button class="pose-btn" id="home-btn" type="button">HOME</button>
+  <button class="pose-btn" id="sleep-btn" type="button">SLEEP</button>
+</div>
+
+<div id="grasp-row">
+  <div class="grasp-title">Click-to-grasp (D435i)</div>
+  <div id="grasp-btn-row">
+    <button id="grasp-btn" type="button" disabled title="Move to the click, then the scripted pinch closes">Grasp at point</button>
+    <button id="unlock-pan-btn" type="button">Unlock pan</button>
+  </div>
+  <div id="grasp-cancel-row">
+    <button id="cancel-grasp-btn" type="button">Cancel</button>
+  </div>
+  <div class="grasp-title">Handoff (jaw camera)</div>
+  <div id="handoff-btn-row">
+    <button id="handoff-grab-btn" type="button">Grab object</button>
+    <button id="handoff-release-btn" type="button">Release object</button>
+  </div>
+  <div id="grasp-status">Click an object in the D435i view, or use Grab / Release</div>
+</div>
+
+<div id="cal-row">
+  <div class="grasp-title">Teach-cal (tip + pan sweep)</div>
+  <div id="teach-row">
+    <button id="teach-free-btn" type="button">Free arm</button>
+  </div>
+  <div id="cal-btn-row">
+    <button id="cal-save-btn" type="button">Save tip pose</button>
+    <button id="cal-goto-btn" type="button">Sleep→taught</button>
+    <button id="cal-abort-btn" type="button">Abort cal</button>
+  </div>
+  <div id="cal-run-row">
+    <label class="g-label" for="cal-n">Samples</label>
+    <input type="number" id="cal-n" min="2" max="40" value="8" step="1" title="Number of pan angles">
+    <button id="cal-sweep-btn" type="button">Run pan cal</button>
+  </div>
+  <div id="cal-status">Teach-cal idle — start teach_cal_bringup.sh</div>
+</div>
+
+<div id="il-row">
+  <div class="grasp-title">Imitation · lookreach ACT (twin)</div>
+  <div id="il-act-row">
+    <label for="il-act-select">ACT</label>
+    <select id="il-act-select" title="Named trained policy. PLAY uses this. Recordings stay separate."></select>
+  </div>
+  <div id="il-collection-row">
+    <span id="il-collection-label">collection: tabletop_pick</span>
+    <span id="il-take-count" title="Saved takes in this collection">0 saved</span>
+    <button id="il-collection-btn" type="button" title="Start a new recording folder. Does not change the selected ACT.">New collection</button>
+  </div>
+  <div id="il-auto-row">
+    <label for="il-auto-count">Takes</label>
+    <input id="il-auto-count" type="number" min="1" max="15" value="5" step="1" title="How many grasps around this click. 1 to 15. The same click repeats the same offsets.">
+    <button id="il-auto-btn" type="button" title="Grasp the clicked pole at a fixed spread of nearby points. Holding the pole saves the take. After every saved or discarded take, the jaws open and all arm joints return to the pose where Auto collect started. Move the pole and click again for a different grasp.">Auto collect</button>
+    <label for="il-train-steps">Steps</label>
+    <input id="il-train-steps" type="number" min="1000" max="100000" value="20000" step="1000" title="Training steps for the next Train click. 1000 to 100000.">
+    <button id="il-train-btn" type="button" title="Train an ACT from the current collection for the Steps count. Does not replace the shoulder policy.">Train</button>
+    <span id="il-train-status">train idle</span>
+  </div>
+  <div id="il-btn-row">
+    <button id="il-rec-btn" type="button" onclick="send({type:'il_start',source:(typeof ilSource!=='undefined'&&ilSource)||'teleop'})">REC</button>
+    <button id="il-save-btn" type="button" onclick="send({type:'il_save',source:(typeof ilSource!=='undefined'&&ilSource)||'teleop'})">SAVE</button>
+    <button id="il-discard-btn" type="button" onclick="send({type:'il_discard'})">DISCARD</button>
+    <button id="il-play-btn" type="button" onclick="send({type:'il_play'})" title="Play the ACT selected above, from the current pose.">PLAY</button>
+    <button id="il-replay-btn" type="button" onclick="send({type:'il_replay'})" title="Play the last saved recording from the current pose. Does not change the selected ACT.">REPLAY</button>
+    <button id="il-stop-btn" type="button" onclick="send({type:'il_stop'})" title="Stop ACT, replay, or auto collect and hold the arm.">STOP</button>
+  </div>
+  <div id="il-status">IL idle — PLAY runs the selected ACT · REPLAY runs the last take</div>
+</div>
+
+<!-- Joint readout -->
+<div id="joint-panel">
+  <div class="joint-row"><span class="joint-name">waist</span><span class="joint-val" id="j-waist">0.0°</span></div>
+  <input type="range" class="gripper-slider joint-slider" id="slider-waist" min="0" max="100" value="50" step="1" style="width:100%;margin:2px 0 8px;">
+  <div class="joint-row"><span class="joint-name">wrist_angle</span><span class="joint-val" id="j-wrist_angle">0.0°</span></div>
+  <input type="range" class="gripper-slider joint-slider" id="slider-wrist_angle" min="0" max="100" value="50" step="1" style="width:100%;margin:2px 0 8px;">
+  <div class="joint-row"><span class="joint-name">shoulder</span><span class="joint-val" id="j-shoulder">0.0°</span></div>
+  <input type="range" class="gripper-slider joint-slider" id="slider-shoulder" min="0" max="100" value="50" step="1" style="width:100%;margin:2px 0 8px;">
+  <div class="joint-row"><span class="joint-name">wrist_rot</span><span class="joint-val" id="j-wrist_rotate">0.0°</span></div>
+  <input type="range" class="gripper-slider joint-slider" id="slider-wrist_rotate" min="0" max="100" value="50" step="1" style="width:100%;margin:2px 0 8px;">
+</div>
+
+<!-- Three thumbsticks -->
+<div id="stick-zone">
+  <!-- Arm stick 1: waist + shoulder -->
+  <div class="stick-wrap">
+    <div class="stick-label">Arm · Base</div>
+    <div class="stick-outer" id="stick-arm1">
+      <span class="axis-label axis-top">SHLDR</span>
+      <span class="axis-label axis-right">WAIST</span>
+      <div class="stick-knob" id="knob-arm1"></div>
+    </div>
+  </div>
+
+  <!-- Drive stick -->
+  <div class="stick-wrap">
+    <div class="stick-label">Drive</div>
+    <div class="stick-outer drive" id="stick-drive">
+      <span class="axis-label axis-top">FWD</span>
+      <span class="axis-label axis-right">TURN</span>
+      <div class="stick-knob" id="knob-drive"></div>
+    </div>
+  </div>
+
+  <!-- Arm stick 2: wrist angle + rotate -->
+  <div class="stick-wrap">
+    <div class="stick-label">Arm · Wrist</div>
+    <div class="stick-outer" id="stick-arm2">
+      <span class="axis-label axis-top">ANGLE</span>
+      <span class="axis-label axis-right">ROT</span>
+      <div class="stick-knob" id="knob-arm2"></div>
+    </div>
+  </div>
+</div>
+
+<div id="nav-row">
+  <select id="loc-select" aria-label="Named location">
+    <option value="">— select location —</option>
+  </select>
+  <div id="nav-btn-row">
+    <button id="go-btn" type="button">Go to location</button>
+    <button id="cancel-nav-btn" type="button">Cancel goal</button>
+    <button id="restart-nav-btn" type="button">Restart nav</button>
+  </div>
+  <div id="nav-status"></div>
+</div>
+
+<div id="pose-row">
+  <button class="pose-btn" id="dock-btn">DOCK</button>
+  <button class="pose-btn" id="undock-btn">UNDOCK</button>
+</div>
+
+<footer id="mode-footer">
+  Arm·Base: waist + shoulder &nbsp;|&nbsp; Drive: forward + turn &nbsp;|&nbsp; Arm·Wrist: angle + rotate<br>
+  Grasp: click D435i (green cube), then Grasp. Wide is live video + green overlay only.
+</footer>
+<div id="health-panel">
+  <div class="health-title">SERVO STATUS</div>
+  <div id="health-rows"></div>
+</div>
+</div><!-- #ctrl-col -->
+</div><!-- #stage -->
+
+<script>
+const WS_URL = `ws://${location.hostname}:8766`;
+let ws = null, wsReady = false;
+const statusEl = document.getElementById('ws-status');
+
+const UI_MODES = ['user', 'autonomous', 'imitation', 'calibration'];
+const MODE_FOOTER = {
+  user:
+    'Arm·Base: waist + shoulder &nbsp;|&nbsp; Drive: forward + turn &nbsp;|&nbsp; Arm·Wrist: angle + rotate<br>' +
+    'Grasp: click D435i (green cube), then Grasp. Wide is live video + green overlay only.',
+  autonomous:
+    'Arm·Base / Drive / Wrist sticks plus click-to-grasp, same as User Control.<br>' +
+    'Nav: pick a named location, then Go. Dock / Undock below.',
+  imitation:
+    'Teleop + click-to-grasp to collect demos. REC, then SAVE or DISCARD. PLAY runs the policy.<br>' +
+    'A successful Grasp at point while recording is stored as an oracle demo.',
+  calibration:
+    'Teach-cal: Free arm, move the tip, Hold arm, Save tip pose. Then Sleep→taught or Run pan cal.<br>' +
+    'HOME / SLEEP available. Click-to-grasp is off in this mode.',
+};
+function uiMode() {
+  return document.body.dataset.mode || 'user';
+}
+function setMode(mode) {
+  if (!UI_MODES.includes(mode)) mode = 'user';
+  document.body.dataset.mode = mode;
+  try { localStorage.setItem('grabit-ui-mode', mode); } catch (err) { /* ignore */ }
+  document.querySelectorAll('#mode-menu .mode-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  });
+  const footer = document.getElementById('mode-footer');
+  if (footer) footer.innerHTML = MODE_FOOTER[mode];
+  const pane = document.getElementById('d435i-pane');
+  if (pane) {
+    pane.classList.toggle('grasp-target', mode !== 'calibration');
+    pane.title = mode === 'calibration'
+      ? 'Live D435i — click-to-grasp disabled in calibration'
+      : 'Click object to grasp';
+  }
+}
+document.getElementById('mode-menu').addEventListener('pointerdown', (e) => {
+  const btn = e.target.closest('.mode-btn');
+  if (!btn) return;
+  e.preventDefault();
+  setMode(btn.dataset.mode);
+});
+(function initMode() {
+  let saved = 'user';
+  try { saved = localStorage.getItem('grabit-ui-mode') || 'user'; } catch (err) { /* ignore */ }
+  setMode(saved);
+})();
+
+function setGuideOpen(open) {
+  document.body.classList.toggle('guide-open', !!open);
+  const btn = document.getElementById('guide-btn');
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  try { localStorage.setItem('grabit-ui-guide', open ? '1' : '0'); } catch (err) { /* ignore */ }
+}
+document.getElementById('guide-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  setGuideOpen(!document.body.classList.contains('guide-open'));
+});
+(function initGuide() {
+  let open = false;
+  try { open = localStorage.getItem('grabit-ui-guide') === '1'; } catch (err) { /* ignore */ }
+  setGuideOpen(open);
+})();
+
+
+// ── Servo health ───────────────────────────────────────────────────────────
+const SERVOS = ["waist","shoulder","shoulder_shadow","wrist_angle","wrist_rotate","gripper","pan"];
+const healthRows = document.getElementById('health-rows');
+const ovalEls = {}, tempEls = {};
+SERVOS.forEach(s => {
+  const row = document.createElement('div'); row.className = 'health-row';
+  const oval = document.createElement('div'); oval.className = 'health-oval unknown';
+  const name = document.createElement('span'); name.className = 'health-name'; name.textContent = s;
+  const temp = document.createElement('span'); temp.className = 'health-temp'; temp.textContent = '--';
+  const btn = document.createElement('button'); btn.className = 'reboot-btn'; btn.textContent = 'reboot';
+  btn.addEventListener('click', () => {
+    if (confirm('Reboot servo "' + s + '"?\n\nThe joint will briefly lose torque and not hold position.')) {
+      send({ type: 'reboot', servo: s });
+    }
+  });
+  row.append(oval, name, temp, btn);
+  healthRows.append(row);
+  ovalEls[s] = oval; tempEls[s] = temp;
+});
+
+const healthHold = {};
+function updateHealth(health) {
+  for (const [s, info] of Object.entries(health)) {
+    if (!ovalEls[s]) continue;
+    const st = (info && info.status) || 'unknown';
+    // Keep last green through a brief stale sample only — never hide warn/error.
+    if (st === 'unknown' && info && info.live === false && ovalEls[s].classList.contains('green')) {
+      healthHold[s] = (healthHold[s] || 0) + 1;
+      if (healthHold[s] < 3) continue;
+    } else {
+      healthHold[s] = 0;
+    }
+    ovalEls[s].className = 'health-oval ' + st;
+    let txt = (info.temp != null ? info.temp + '\u00b0C' : '--');
+    if (info.err_label) txt += ' ' + info.err_label;
+    else if (info.err) txt += ' E' + info.err;
+    if (info.blocked) txt += ' \u26d4';
+    else if (info.live === false) txt += ' \u2022';
+    tempEls[s].textContent = txt;
+    const bits = [];
+    if (info.live) bits.push('live');
+    if (info.temp != null) bits.push(info.temp + 'C');
+    if (info.err_label) bits.push(info.err_label);
+    if (info.load != null) bits.push('load ' + info.load);
+    ovalEls[s].title = s + ': ' + (bits.join(', ') || st);
+  }
+}
+
+
+const JOINT_SLIDERS = ["waist","shoulder","wrist_angle","wrist_rotate"];
+const jSliders = {}, jDragging = {};
+JOINT_SLIDERS.forEach(j => {
+  const el = document.getElementById('slider-'+j);
+  if (!el) return;
+  jSliders[j] = el; jDragging[j] = false;
+  el.addEventListener('pointerdown', ()=>{ jDragging[j]=true; });
+  el.addEventListener('pointerup',   ()=>{ jDragging[j]=false; });
+  el.addEventListener('pointercancel',()=>{ jDragging[j]=false; });
+  el.addEventListener('input', (e)=>{ send({type:'joint_angle', joint:j, value:parseInt(e.target.value)/100.0}); });
+});
+function updateJointSliders(sliderPcts){
+  if(!sliderPcts) return;
+  for(const [j,pct] of Object.entries(sliderPcts)){
+    if(jSliders[j] && !jDragging[j]) jSliders[j].value = pct;
+  }
+}
+
+
+
+
+
+
+function setupAngleEditing(){
+  ["waist","shoulder","wrist_angle","wrist_rotate"].forEach(function(j){
+    var el = document.getElementById('j-'+j);
+    if(!el) return;
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', function(){
+      if(el.dataset.editing) return;
+      el.dataset.editing = "1";
+      var current = el.textContent.replace('\u00b0','').trim();
+      el.textContent = '';
+      var input = document.createElement('input');
+      input.type = 'number'; input.step = '1'; input.value = current;
+      input.style.width = '58px';
+      input.style.fontFamily = 'inherit';
+      input.style.fontSize = '.72rem';
+      input.style.textAlign = 'right';
+      input.style.background = '#1c2128';
+      input.style.color = '#58a6ff';
+      input.style.border = '1px solid #58a6ff';
+      input.style.borderRadius = '4px';
+      input.style.outline = 'none';
+      el.appendChild(input);
+      input.focus(); input.select();
+      var done = false;
+      function commit(save){
+        if(done) return; done = true;
+        var deg = parseFloat(input.value);
+        if(save && !isNaN(deg)){ send({type:'joint_degrees', joint:j, degrees:deg}); }
+        delete el.dataset.editing;
+        el.textContent = ((save && !isNaN(deg)) ? deg.toFixed(1) : current) + '\u00b0';
+      }
+      input.addEventListener('keydown', function(e){ e.stopPropagation(); if(e.key==='Enter'){ commit(true); } else if(e.key==='Escape'){ commit(false); } });
+      input.addEventListener('blur', function(){ commit(true); });
+      input.addEventListener('click', function(e){ e.stopPropagation(); });
+    });
+  });
+}
+setupAngleEditing();
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+  // #region agent log
+  const _dbg = (message, data, hypothesisId) => {
+    fetch('http://127.0.0.1:7812/ingest/4a996561-7160-477a-9524-6d3d0dc3ae15',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'286aa6'},body:JSON.stringify({sessionId:'286aa6',location:'gui.html:ws',message,data:data||{},timestamp:Date.now(),hypothesisId:hypothesisId||'H2',runId:'pre'})}).catch(()=>{});
+  };
+  // #endregion
+  ws.onopen = () => {
+    wsReady = true; statusEl.textContent = '● ONLINE'; statusEl.classList.add('connected');
+    // #region agent log
+    _dbg('ws open', {url: WS_URL}, 'H2');
+    // #endregion
+  };
+  ws.onclose = () => {
+    wsReady = false; statusEl.textContent = '● OFFLINE'; statusEl.classList.remove('connected');
+    // #region agent log
+    _dbg('ws close', {readyState: ws.readyState}, 'H2');
+    // #endregion
+    setTimeout(connect, 2000);
+  };
+  ws.onerror = () => {
+    // #region agent log
+    _dbg('ws error', {readyState: ws.readyState}, 'H2');
+    // #endregion
+  };
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'locations') fillLocations(msg.names || []);
+      if (msg.type === 'joint_state') {
+        updateJoints(msg.joints);
+        updateJointSliders(msg.slider_pcts);
+        updateGripperFromState(msg.gripper_pct);
+        updatePanFromState(msg.pan_pct);
+      }
+      if (msg.type === 'gripper_init') { gripperSlider.value = msg.value; updateGripperLabel(msg.value); }
+      if (msg.type === 'pan_init') { panSlider.value = msg.value; updatePanLabel(msg.value); }
+      if (msg.type === 'servo_health') updateHealth(msg.health);
+      if (msg.type === 'nav_status') setNavStatus(msg.text || '');
+      if (msg.type === 'grasp_status') setGraspStatus(msg);
+      if (msg.type === 'il_status') setIlStatus(msg);
+      if (msg.type === 'train_status') setTrainStatus(msg);
+      if (msg.type === 'teach_free') setTeachFree(!!msg.free);
+      if (msg.type === 'cal_status') setCalStatus(msg);
+      if (msg.type === 'world') setWorldBadge(msg.world);
+      if (msg.type === 'act_catalog') fillActCatalog(msg);
+      if (msg.type === 'collection') setCollection(msg.name, msg.episodes);
+      if (msg.type === 'pan_lock') {
+        panLocked = !!msg.locked;
+        const ps = document.getElementById('pan-slider');
+        if (ps) {
+          ps.disabled = panLocked;
+          if (msg.value != null) { ps.value = msg.value; updatePanLabel(msg.value); }
+        }
+        // #region agent log
+        _dbg('pan_lock msg', {locked: panLocked, value: msg.value}, 'H5');
+        // #endregion
+      }
+    } catch {}
+  };
+}
+connect();
+function setWorldBadge(world){
+  const el = document.getElementById('world-badge');
+  if (!el) return;
+  const sim = String(world || '').toLowerCase() === 'sim';
+  el.textContent = sim ? 'SIM' : 'REAL';
+  el.classList.toggle('sim', sim);
+  el.classList.toggle('real', !sim);
+}
+function fillActCatalog(msg){
+  const sel = document.getElementById('il-act-select');
+  if (!sel || !msg) return;
+  const acts = Array.isArray(msg.acts) ? msg.acts : [];
+  const selected = String(msg.selected || '');
+  const current = sel.value;
+  const same = acts.length === sel.options.length && acts.every(function (a, i) {
+    return sel.options[i] && sel.options[i].value === a.name;
+  });
+  if (!same) {
+    sel.innerHTML = '';
+    acts.forEach(function (a) {
+      const opt = document.createElement('option');
+      opt.value = a.name;
+      opt.textContent = a.label || a.name;
+      sel.appendChild(opt);
+    });
+    if (!acts.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'no trained ACT';
+      sel.appendChild(opt);
+    }
+  }
+  const want = selected || current;
+  if (want && Array.from(sel.options).some(function (o) { return o.value === want; })) {
+    sel.value = want;
+  }
+}
+function setTakeCount(n){
+  const el = document.getElementById('il-take-count');
+  if (!el || n == null || isNaN(Number(n))) return;
+  const count = Math.max(0, Number(n));
+  const name = el.dataset.collection || '';
+  const saved = count === 1 ? '1 saved' : count + ' saved';
+  el.textContent = name ? (name + ' · ' + saved) : saved;
+}
+function setCollection(name, episodes){
+  const label = document.getElementById('il-collection-label');
+  const badge = document.getElementById('il-take-count');
+  const shown = name || 'tabletop_pick';
+  if (label) label.textContent = 'collection: ' + shown;
+  if (badge) badge.dataset.collection = shown;
+  if (episodes != null) setTakeCount(episodes);
+}
+function newCollection(){
+  const name = window.prompt('Name this collection. Spaces are ok. An unsaved take is dropped. PLAY is unchanged.');
+  if (!name) return;
+  send({ type: 'il_collection', name: name.trim() });
+}
+(function bindCollection(){
+  const btn = document.getElementById('il-collection-btn');
+  if (btn) btn.addEventListener('click', newCollection);
+})();
+(function bindAutoCollect(){
+  const btn = document.getElementById('il-auto-btn');
+  const input = document.getElementById('il-auto-count');
+  if (!btn) return;
+  btn.addEventListener('click', function () {
+    let n = input ? parseInt(input.value, 10) : 5;
+    if (isNaN(n)) n = 5;
+    n = Math.max(1, Math.min(15, n));
+    if (input) input.value = String(n);
+    send({ type: 'il_auto_collect', count: n });
+  });
+})();
+(function bindTrain(){
+  const btn = document.getElementById('il-train-btn');
+  const input = document.getElementById('il-train-steps');
+  if (!btn) return;
+  btn.addEventListener('click', function () {
+    let n = input ? parseInt(input.value, 10) : 20000;
+    if (isNaN(n)) n = 20000;
+    n = Math.max(1000, Math.min(100000, n));
+    if (input) input.value = String(n);
+    setTrainStatus({ message: 'training: starting ' + n + ' steps' });
+    send({ type: 'il_train', steps: n });
+  });
+})();
+function setTrainStatus(msg){
+  const el = document.getElementById('il-train-status');
+  if (!el || !msg) return;
+  el.textContent = msg.message || 'train idle';
+}
+(function bindActSelect(){
+  const sel = document.getElementById('il-act-select');
+  if (!sel) return;
+  sel.addEventListener('change', function () {
+    if (!sel.value) return;
+    send({ type: 'il_act_select', name: sel.value });
+  });
+})();
+(function pollWorld(){
+  function tick(){
+    fetch('/grabit/mode', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (msg) { if (msg && msg.world) setWorldBadge(msg.world); })
+      .catch(function () {});
+  }
+  tick();
+  setInterval(tick, 2000);
+})();
+function send(o){
+  try {
+    fetch(`http://${location.hostname}:8081/isaac/cmd`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(o || {}),
+    }).catch(function () {});
+  } catch (e) {}
+  if (wsReady && ws.readyState === 1) {
+    ws.send(JSON.stringify(o));
+  } else {
+    // #region agent log
+    fetch('http://127.0.0.1:7812/ingest/4a996561-7160-477a-9524-6d3d0dc3ae15',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'286aa6'},body:JSON.stringify({sessionId:'286aa6',location:'gui.html:send',message:'send dropped — ws not ready',data:{type:o&&o.type,wsReady,readyState:ws&&ws.readyState},timestamp:Date.now(),hypothesisId:'H2',runId:'pre'})}).catch(()=>{});
+    // #endregion
+  }
+}
+
+// ── Click-to-grasp on D435i ───────────────────────────────────────────────
+const graspBtn = document.getElementById('grasp-btn');
+const handoffGrabBtn = document.getElementById('handoff-grab-btn');
+const handoffReleaseBtn = document.getElementById('handoff-release-btn');
+const graspStatusEl = document.getElementById('grasp-status');
+const crosshair = document.getElementById('grasp-crosshair');
+const wideCrosshair = document.getElementById('wide-crosshair');
+const landingCube = document.getElementById('landing-cube');
+const d435iReach = document.getElementById('d435i-reach');
+const wideCubes = document.getElementById('wide-cubes');
+const d435Pane = document.getElementById('d435i-pane');
+const widePane = document.getElementById('wide-pane');
+let panLocked = false;
+let hasGraspPoint = false;
+let clickSeq = 0;
+let awaitingClick = false;
+let lastLandingCube = null;
+let lastWideObjCube = null;
+let lastReachMask = null;
+
+/** Map normalized image UV → pane % accounting for object-fit: contain. */
+function uvToPanePct(img, u, v){
+  const paneEl = (img && img.closest && img.closest('.cam-pane')) || d435Pane;
+  const pane = paneEl.getBoundingClientRect();
+  const rw = pane.width, rh = pane.height;
+  const nw = img.naturalWidth || 0;
+  const nh = img.naturalHeight || 0;
+  if (nw > 0 && nh > 0 && rw > 0 && rh > 0) {
+    const scale = Math.min(rw / nw, rh / nh);
+    const dispW = nw * scale, dispH = nh * scale;
+    const offX = (rw - dispW) / 2, offY = (rh - dispH) / 2;
+    const x = offX + u * nw * scale;
+    const y = offY + v * nh * scale;
+    return { x: (x / rw) * 100, y: (y / rh) * 100 };
+  }
+  return { x: u * 100, y: v * 100 };
+}
+
+function clearReachOverlay(){
+  if (!d435iReach) return;
+  d435iReach.innerHTML = '';
+  d435iReach.style.display = 'none';
+  lastReachMask = null;
+}
+
+function drawReachOverlay(reach){
+  if (!d435iReach) return;
+  const cam = document.getElementById('camera');
+  d435iReach.setAttribute('viewBox', '0 0 100 100');
+  d435iReach.setAttribute('preserveAspectRatio', 'none');
+  d435iReach.innerHTML = '';
+  if (!reach || !Array.isArray(reach.cells) || !reach.nu || !reach.nv) {
+    d435iReach.style.display = 'none';
+    return;
+  }
+  const nu = Number(reach.nu), nv = Number(reach.nv);
+  const du = 1.0 / nu, dv = 1.0 / nv;
+  const ns = 'http://www.w3.org/2000/svg';
+  let drawn = 0;
+  for (let j = 0; j < nv; j++) {
+    for (let i = 0; i < nu; i++) {
+      if (!reach.cells[j * nu + i]) continue;
+      const u0 = i * du, v0 = j * dv;
+      const a = uvToPanePct(cam, u0, v0);
+      const b = uvToPanePct(cam, u0 + du, v0 + dv);
+      const r = document.createElementNS(ns, 'rect');
+      r.setAttribute('x', Math.min(a.x, b.x).toFixed(2));
+      r.setAttribute('y', Math.min(a.y, b.y).toFixed(2));
+      r.setAttribute('width', Math.abs(b.x - a.x).toFixed(2));
+      r.setAttribute('height', Math.abs(b.y - a.y).toFixed(2));
+      r.setAttribute('class', 'reach-cell');
+      d435iReach.appendChild(r);
+      drawn += 1;
+    }
+  }
+  d435iReach.style.display = drawn ? 'block' : 'none';
+}
+
+function clearLandingCube(){
+  if (!landingCube) return;
+  landingCube.innerHTML = '';
+  landingCube.style.display = 'none';
+  lastLandingCube = null;
+}
+
+function clearWideCubes(){
+  if (!wideCubes) return;
+  wideCubes.innerHTML = '';
+  wideCubes.style.display = 'none';
+  lastWideObjCube = null;
+}
+
+function appendCubeArrows(svg, cube, img){
+  if (!svg || !cube || !cube.arrows) return 0;
+  let n = 0;
+  n += appendArrow(svg, cube.arrows.red, img, 'cube-arrow-red');
+  n += appendArrow(svg, cube.arrows.blue, img, 'cube-arrow-blue');
+  return n;
+}
+
+function appendArrow(svg, seg, img, cls){
+  if (!svg || !Array.isArray(seg) || seg.length < 2) return 0;
+  const p0 = seg[0], p1 = seg[1];
+  if (!p0 || !p1 || p0.length < 2 || p1.length < 2) return 0;
+  const a = uvToPanePct(img, Number(p0[0]), Number(p0[1]));
+  const b = uvToPanePct(img, Number(p1[0]), Number(p1[1]));
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 0.5) return 0;
+  const ux = dx / len, uy = dy / len;
+  const head = Math.min(3.4, Math.max(1.8, len * 0.28));
+  const hx = b.x - ux * head, hy = b.y - uy * head;
+  const px = -uy, py = ux;
+  const half = head * 0.42;
+  const ns = 'http://www.w3.org/2000/svg';
+  const line = document.createElementNS(ns, 'line');
+  line.setAttribute('x1', a.x.toFixed(2));
+  line.setAttribute('y1', a.y.toFixed(2));
+  line.setAttribute('x2', hx.toFixed(2));
+  line.setAttribute('y2', hy.toFixed(2));
+  line.setAttribute('class', cls);
+  svg.appendChild(line);
+  const poly = document.createElementNS(ns, 'polygon');
+  poly.setAttribute(
+    'points',
+    b.x.toFixed(2) + ',' + b.y.toFixed(2) + ' ' +
+    (hx + px * half).toFixed(2) + ',' + (hy + py * half).toFixed(2) + ' ' +
+    (hx - px * half).toFixed(2) + ',' + (hy - py * half).toFixed(2)
+  );
+  poly.setAttribute('class', cls);
+  svg.appendChild(poly);
+  return 1;
+}
+
+function appendCubeFace(svg, cube, img, cls){
+  if (!svg || !cube || !Array.isArray(cube.uv) || !Array.isArray(cube.face)) return 0;
+  const ns = 'http://www.w3.org/2000/svg';
+  const pts = [];
+  for (const i of cube.face) {
+    const p = cube.uv[i];
+    if (!p || p.length < 2) continue;
+    const q = uvToPanePct(img, Number(p[0]), Number(p[1]));
+    pts.push(q.x.toFixed(2) + ',' + q.y.toFixed(2));
+  }
+  if (pts.length < 3) return 0;
+  const poly = document.createElementNS(ns, 'polygon');
+  poly.setAttribute('points', pts.join(' '));
+  poly.setAttribute('class', cls);
+  svg.appendChild(poly);
+  return 1;
+}
+
+function appendCubeLines(svg, cube, img, cls){
+  if (!svg || !cube || !Array.isArray(cube.uv) || !Array.isArray(cube.edges)) return 0;
+  const pts = cube.uv.map((p) => {
+    if (!p || p.length < 2) return null;
+    return uvToPanePct(img, Number(p[0]), Number(p[1]));
+  });
+  const ns = 'http://www.w3.org/2000/svg';
+  let drawn = 0;
+  for (const e of cube.edges) {
+    const a = pts[e[0]], b = pts[e[1]];
+    if (!a || !b) continue;
+    const line = document.createElementNS(ns, 'line');
+    line.setAttribute('x1', a.x.toFixed(2));
+    line.setAttribute('y1', a.y.toFixed(2));
+    line.setAttribute('x2', b.x.toFixed(2));
+    line.setAttribute('y2', b.y.toFixed(2));
+    const meanV = ((cube.uv[e[0]]?.[1] || 0) + (cube.uv[e[1]]?.[1] || 0)) * 0.5;
+    line.setAttribute('class', meanV < 0.45 ? (cls + ' cube-far') : cls);
+    svg.appendChild(line);
+    drawn += 1;
+  }
+  return drawn;
+}
+
+function appendMarkerKeys(svg, marker, img, cls, dotCls){
+  if (!svg || !marker || !img) return 0;
+  const ns = 'http://www.w3.org/2000/svg';
+  let drawn = 0;
+  for (const key of ['center','top','bottom','left','right']) {
+    const p = marker[key];
+    if (!p) continue;
+    const u = Number(p.u), v = Number(p.v);
+    if (!isFinite(u) || !isFinite(v)) continue;
+    const q = uvToPanePct(img, u, v);
+    const c = document.createElementNS(ns, 'circle');
+    c.setAttribute('cx', q.x.toFixed(2));
+    c.setAttribute('cy', q.y.toFixed(2));
+    c.setAttribute('r', key === 'center' ? '3.2' : '2.2');
+    c.setAttribute('class', cls);
+    svg.appendChild(c);
+    const d = document.createElementNS(ns, 'circle');
+    d.setAttribute('cx', q.x.toFixed(2));
+    d.setAttribute('cy', q.y.toFixed(2));
+    d.setAttribute('r', '0.8');
+    d.setAttribute('class', dotCls);
+    svg.appendChild(d);
+    drawn += 1;
+  }
+  return drawn;
+}
+
+function appendBBox(svg, box, img, cls){
+  if (!svg || !box || !img) return 0;
+  const u0 = Number(box.u0), v0 = Number(box.v0);
+  const u1 = Number(box.u1), v1 = Number(box.v1);
+  if (![u0, v0, u1, v1].every(isFinite)) return 0;
+  const a = uvToPanePct(img, Math.min(u0, u1), Math.min(v0, v1));
+  const b = uvToPanePct(img, Math.max(u0, u1), Math.max(v0, v1));
+  const ns = 'http://www.w3.org/2000/svg';
+  const r = document.createElementNS(ns, 'rect');
+  r.setAttribute('x', Math.min(a.x, b.x).toFixed(2));
+  r.setAttribute('y', Math.min(a.y, b.y).toFixed(2));
+  r.setAttribute('width', Math.abs(b.x - a.x).toFixed(2));
+  r.setAttribute('height', Math.abs(b.y - a.y).toFixed(2));
+  r.setAttribute('class', cls);
+  svg.appendChild(r);
+  return 1;
+}
+
+function drawLandingCube(cube, marker, click){
+  if (!landingCube) return;
+  if (!cube && !marker && !click) {
+    clearLandingCube();
+    return;
+  }
+  landingCube.setAttribute('viewBox', '0 0 100 100');
+  landingCube.setAttribute('preserveAspectRatio', 'none');
+  landingCube.innerHTML = '';
+  let drawn = 0;
+  drawn += appendCubeFace(landingCube, cube, cam, 'cube-face');
+  drawn += appendCubeLines(landingCube, cube, cam, 'cube-obj');
+  drawn += appendCubeArrows(landingCube, cube, cam);
+  drawn += appendMarkerKeys(landingCube, marker, cam, 'cube-ring', 'cube-ring-dot');
+  drawn += appendClickMark(landingCube, click, cam);
+  landingCube.style.display = drawn ? 'block' : 'none';
+}
+
+function appendRingMark(svg, ring, img){
+  if (!svg || !ring) return 0;
+  const u = Number(ring.u), v = Number(ring.v);
+  if (!isFinite(u) || !isFinite(v)) return 0;
+  const q = uvToPanePct(img, u, v);
+  const ns = 'http://www.w3.org/2000/svg';
+  const c = document.createElementNS(ns, 'circle');
+  c.setAttribute('cx', q.x.toFixed(2));
+  c.setAttribute('cy', q.y.toFixed(2));
+  c.setAttribute('r', '3.2');
+  c.setAttribute('class', 'cube-ring');
+  svg.appendChild(c);
+  const d = document.createElementNS(ns, 'circle');
+  d.setAttribute('cx', q.x.toFixed(2));
+  d.setAttribute('cy', q.y.toFixed(2));
+  d.setAttribute('r', '0.9');
+  d.setAttribute('class', 'cube-ring-dot');
+  svg.appendChild(d);
+  return 1;
+}
+
+function appendClickMark(svg, click, img){
+  if (!svg || !click) return 0;
+  const u = Number(click.u), v = Number(click.v);
+  if (!isFinite(u) || !isFinite(v)) return 0;
+  const q = uvToPanePct(img, u, v);
+  const ns = 'http://www.w3.org/2000/svg';
+  const c = document.createElementNS(ns, 'circle');
+  c.setAttribute('cx', q.x.toFixed(2));
+  c.setAttribute('cy', q.y.toFixed(2));
+  c.setAttribute('r', '3.6');
+  c.setAttribute('class', 'cube-click');
+  svg.appendChild(c);
+  const d = document.createElementNS(ns, 'circle');
+  d.setAttribute('cx', q.x.toFixed(2));
+  d.setAttribute('cy', q.y.toFixed(2));
+  d.setAttribute('r', '1.0');
+  d.setAttribute('class', 'cube-click-dot');
+  svg.appendChild(d);
+  return 1;
+}
+
+function drawWideCubes(objCube, ring, click, marker, reproj, objBox, jawBox){
+  if (!wideCubes) return;
+  const wideImg = document.getElementById('wide');
+  wideCubes.setAttribute('viewBox', '0 0 100 100');
+  wideCubes.setAttribute('preserveAspectRatio', 'none');
+  wideCubes.innerHTML = '';
+  let drawn = 0;
+  drawn += appendBBox(wideCubes, objBox, wideImg, 'bbox-obj');
+  drawn += appendBBox(wideCubes, jawBox, wideImg, 'bbox-jaw');
+  drawn += appendCubeFace(wideCubes, objCube, wideImg, 'cube-obj-face');
+  drawn += appendCubeLines(wideCubes, objCube, wideImg, 'cube-obj');
+  drawn += appendCubeArrows(wideCubes, objCube, wideImg);
+  drawn += appendMarkerKeys(wideCubes, marker, wideImg, 'cube-ring', 'cube-ring-dot');
+  drawn += appendMarkerKeys(wideCubes, reproj, wideImg, 'cube-reproj', 'cube-reproj-dot');
+  drawn += appendRingMark(wideCubes, ring, wideImg);
+  drawn += appendClickMark(wideCubes, click, wideImg);
+  wideCubes.style.display = drawn ? 'block' : 'none';
+}
+
+function setGraspStatus(msg){
+  if (msg.d435i_reach) {
+    lastReachMask = msg.d435i_reach;
+    drawReachOverlay(lastReachMask);
+  }
+  const stIn = msg.status || '';
+  const terminalIn = stIn === 'point' || stIn === 'error' || stIn === 'unreachable' || stIn === 'done' || stIn === 'cancelled' || stIn === 'approach_done';
+  // A mismatched click_id used to drop the reply and leave "Resolving depth…".
+  // Still show a finished result while a click is waiting.
+  if (msg.click_id != null && Number(msg.click_id) !== clickSeq) {
+    if (!(awaitingClick && terminalIn)) return;
+  }
+  // Never drop the first "point" after a click — stale overlays without
+  // click_id used to leave the UI on "Resolving depth…" forever.
+  const st = msg.status || '';
+  if (awaitingClick && (st === 'point' || st === 'error' || st === 'unreachable')) {
+    awaitingClick = false;
+  }
+  const text = msg.message || st;
+  let xyz = '';
+  if (msg.x != null && msg.y != null && msg.z != null) {
+    xyz = `  [${Number(msg.x).toFixed(2)}, ${Number(msg.y).toFixed(2)}, ${Number(msg.z).toFixed(2)}] m`;
+  }
+  graspStatusEl.textContent = text + xyz;
+  if (st === 'point' || st === 'done') hasGraspPoint = true;
+  if (st === 'error' && !hasGraspPoint) hasGraspPoint = false;
+  if (st === 'idle') { /* keep point if any */ }
+  if (st === 'idle' || st === 'cancelled') {
+    /* keep point if any */
+  }
+  if (msg.landing_cube) lastLandingCube = msg.landing_cube;
+  if (msg.landing_cube || msg.d435i_marker || msg.click) {
+    drawLandingCube(
+      msg.landing_cube || lastLandingCube,
+      msg.d435i_marker,
+      msg.click
+    );
+  } else if (st === 'idle' || st === 'error' || st === 'cancelled') {
+    clearLandingCube();
+  }
+  if (msg.wide_landing_cube) lastWideObjCube = msg.wide_landing_cube;
+  if (msg.wide_obj_bbox || msg.wide_jaw_bbox || msg.wide_landing_cube || msg.wide_ring || msg.wide_click || msg.wide_marker || msg.wide_marker_reproj) {
+    drawWideCubes(
+      msg.wide_landing_cube || lastWideObjCube,
+      msg.wide_ring,
+      msg.wide_click,
+      msg.wide_marker,
+      msg.wide_marker_reproj,
+      msg.wide_obj_bbox,
+      msg.wide_jaw_bbox
+    );
+  } else if (st === 'idle' || st === 'error' || st === 'cancelled') {
+    clearWideCubes();
+  }
+  const running = st === 'planning' || st === 'grasping' || st === 'busy';
+  // Cancel/finish must re-enable Grasp (backend clears busy immediately on cancel).
+  const terminal = st === 'cancelled' || st === 'done' || st === 'error' || st === 'unreachable';
+  graspBtn.disabled = !hasGraspPoint || (running && !terminal);
+  if (handoffGrabBtn) handoffGrabBtn.disabled = running && !terminal;
+  if (handoffReleaseBtn) handoffReleaseBtn.disabled = running && !terminal;
+  if (st === 'planning' || st === 'grasping') {
+    panLocked = true;
+    if (panSlider) panSlider.disabled = true;
+  } else if (terminal) {
+    // Don't leave Cam Pan stuck after a finished/failed grasp.
+    panLocked = false;
+    if (panSlider) panSlider.disabled = false;
+  }
+  if (st === 'done' && ilRecording) {
+    ilSource = 'oracle';
+    setIlStatus({recording: true, offer_oracle: true, message: 'Oracle grasp done — SAVE to keep'});
+  }
+}
+window.setGraspStatus = setGraspStatus;
+
+// Twin path: poll hub grasp_status (Humble grasp_from_click never replies over DDS).
+(function () {
+  let lastSeq = -1;
+  let clickWatch = null;
+  window._armGraspClickTimeout = function (clickId) {
+    if (clickWatch) clearTimeout(clickWatch);
+    clickWatch = setTimeout(function () {
+      clickWatch = null;
+      if (!awaitingClick) return;
+      setGraspStatus({
+        status: 'error',
+        message: 'No depth reply — click-to-grasp is not answering',
+        click_id: clickId,
+      });
+    }, 6000);
+  };
+  setInterval(function () {
+    fetch('http://' + location.hostname + ':8081/isaac/grasp_status', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (msg) {
+        if (!msg) return;
+        var seq = msg._seq != null ? Number(msg._seq) : -1;
+        if (seq >= 0 && seq === lastSeq) return;
+        if (seq >= 0) lastSeq = seq;
+        setGraspStatus(msg);
+        var st = msg.status || '';
+        if (st === 'point' || st === 'error' || st === 'unreachable' || st === 'done' || st === 'cancelled') {
+          if (clickWatch) { clearTimeout(clickWatch); clickWatch = null; }
+        }
+      })
+      .catch(function () {});
+  }, 100);
+})();
+
+const ilRecBtn = document.getElementById('il-rec-btn');
+const ilPlayBtn = document.getElementById('il-play-btn');
+const ilStatusEl = document.getElementById('il-status');
+let ilRecording = false;
+let ilPlaying = false;
+let ilSource = 'teleop';
+
+function setIlStatus(msg){
+  if (!ilStatusEl) return;
+  if (msg.recording != null) ilRecording = !!msg.recording;
+  if (msg.playing != null) ilPlaying = !!msg.playing;
+  if (ilRecBtn) ilRecBtn.classList.toggle('live', ilRecording);
+  if (ilPlayBtn) ilPlayBtn.classList.toggle('live', ilPlaying);
+  document.body.classList.toggle('il-playing', ilPlaying);
+  const bits = [];
+  if (msg.message) bits.push(msg.message);
+  if (msg.frames != null && ilRecording) bits.push(msg.frames + ' frames');
+  if (msg.kind) bits.push(msg.kind);
+  if (msg.offer_oracle) bits.push('oracle');
+  ilStatusEl.textContent = bits.join(' · ') || (ilRecording ? 'recording' : 'idle');
+}
+
+// Twin hub: PLAY/STOP run host PARK+ACT; poll status (ROS il_status may be absent).
+(function pollIlStatus(){
+  let lastSeq = -1;
+  setInterval(function () {
+    fetch('http://' + location.hostname + ':8081/isaac/il_status', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (msg) {
+        if (!msg) return;
+        var seq = msg._seq != null ? Number(msg._seq) : -1;
+        if (seq >= 0 && seq === lastSeq && msg.playing === ilPlaying) return;
+        if (seq >= 0) lastSeq = seq;
+        setIlStatus(msg);
+      })
+      .catch(function () {});
+  }, 400);
+})();
+
+document.getElementById('il-rec-btn').addEventListener('click', () => {
+  ilSource = 'teleop';
+});
+
+function clickToNorm(img, clientX, clientY){
+  const rect = img.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+  const nw = img.naturalWidth || 0;
+  const nh = img.naturalHeight || 0;
+  const rw = rect.width, rh = rect.height;
+  if (nw > 0 && nh > 0) {
+    // object-fit: contain
+    const scale = Math.min(rw / nw, rh / nh);
+    const dispW = nw * scale, dispH = nh * scale;
+    const offX = (rw - dispW) / 2, offY = (rh - dispH) / 2;
+    const imgX = (x - offX) / scale;
+    const imgY = (y - offY) / scale;
+    if (imgX < 0 || imgY < 0 || imgX > nw || imgY > nh) return null;
+    return {
+      u: imgX / nw,
+      v: imgY / nh,
+      width: nw,
+      height: nh,
+      localX: x,
+      localY: y,
+    };
+  }
+  return { u: x / rw, v: y / rh, localX: x, localY: y };
+}
+
+d435Pane.addEventListener('pointerdown', (e) => {
+  if (uiMode() === 'calibration') return;
+  if (e.target.closest('button')) return;
+  e.preventDefault();
+  const hit = clickToNorm(cam, e.clientX, e.clientY);
+  if (!hit) return;
+  const paneRect = d435Pane.getBoundingClientRect();
+  crosshair.style.display = 'block';
+  crosshair.style.left = (e.clientX - paneRect.left) + 'px';
+  crosshair.style.top = (e.clientY - paneRect.top) + 'px';
+  if (wideCrosshair) wideCrosshair.style.display = 'none';
+  hasGraspPoint = false;
+  graspBtn.disabled = true;
+  awaitingClick = true;
+  clickSeq += 1;
+  graspStatusEl.textContent = 'Resolving depth…';
+  clearLandingCube();
+  clearWideCubes();
+  send({
+    type: 'grasp_click',
+    cam: 'd435i',
+    u: hit.u,
+    v: hit.v,
+    width: hit.width,
+    height: hit.height,
+    click_id: clickSeq,
+  });
+  if (typeof window._armGraspClickTimeout === 'function') {
+    window._armGraspClickTimeout(clickSeq);
+  }
+});
+graspBtn.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (graspBtn.disabled) return;
+  send({ type: 'grasp_execute' }); // backend locks pan for the grasp only
+  graspStatusEl.textContent = 'Executing grasp…';
+});
+document.getElementById('cancel-grasp-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  send({ type: 'grasp_cancel' });
+  panLocked = false;
+  panSlider.disabled = false;
+  graspStatusEl.textContent = 'Cancel requested…';
+});
+let teachFree = false;
+function setTeachFree(free){
+  teachFree = !!free;
+  const btn = document.getElementById('teach-free-btn');
+  if (btn) {
+    btn.classList.toggle('live', teachFree);
+    btn.textContent = teachFree ? 'Hold arm' : 'Free arm';
+  }
+  document.body.classList.toggle('teach-free', teachFree);
+  const statusTarget = uiMode() === 'calibration'
+    ? document.getElementById('cal-status')
+    : graspStatusEl;
+  if (statusTarget) {
+    statusTarget.textContent = teachFree
+      ? 'Arm torque OFF — support it by hand, then Hold arm'
+      : 'Arm holding current pose';
+  }
+}
+document.getElementById('teach-free-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  send({ type: teachFree ? 'arm_hold' : 'arm_free' });
+  const statusTarget = uiMode() === 'calibration'
+    ? document.getElementById('cal-status')
+    : graspStatusEl;
+  if (statusTarget) {
+    statusTarget.textContent = teachFree
+      ? 'Requesting hold…'
+      : 'Requesting torque off — support the arm';
+  }
+});
+
+const calStatusEl = document.getElementById('cal-status');
+function setCalStatus(msg){
+  if (!calStatusEl) return;
+  const st = msg.status || '';
+  const text = msg.message || st;
+  calStatusEl.textContent = text;
+  if (graspStatusEl && (st === 'planning' || st === 'saved' || st === 'done' || st === 'error')) {
+    graspStatusEl.textContent = text;
+  }
+}
+document.getElementById('cal-save-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (teachFree) {
+    alert('Hold the arm first (torque ON), then Save tip pose.');
+    return;
+  }
+  send({ type: 'cal_save' });
+  if (calStatusEl) calStatusEl.textContent = 'Saving tip pose…';
+});
+document.getElementById('cal-goto-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (teachFree) {
+    alert('Hold the arm before Sleep→taught.');
+    return;
+  }
+  if (!confirm('Move Sleep → taught tip pose?\n\nClear the workspace around the arm.')) return;
+  send({ type: 'cal_goto' });
+  if (calStatusEl) calStatusEl.textContent = 'Going Sleep→taught…';
+});
+document.getElementById('cal-sweep-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (teachFree) {
+    alert('Hold the arm before running pan cal.');
+    return;
+  }
+  const nEl = document.getElementById('cal-n');
+  let n = nEl ? parseInt(nEl.value, 10) : 8;
+  if (!isFinite(n) || n < 2) n = 2;
+  if (n > 40) n = 40;
+  if (nEl) nEl.value = String(n);
+  if (!confirm('Run pan calibration with ' + n + ' samples?\n\nArm stays at taught tip; camera pan sweeps automatically.')) return;
+  send({ type: 'cal_sweep', n: n });
+  if (calStatusEl) calStatusEl.textContent = 'Starting pan cal (' + n + ' samples)…';
+});
+document.getElementById('cal-abort-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  send({ type: 'cal_abort' });
+  if (calStatusEl) calStatusEl.textContent = 'Abort requested…';
+});
+
+document.getElementById('handoff-grab-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (handoffGrabBtn.disabled) return;
+  send({ type: 'handoff_grab' });
+  graspStatusEl.textContent = 'Grab: holding pose, opening gripper…';
+});
+document.getElementById('handoff-release-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (handoffReleaseBtn.disabled) return;
+  send({ type: 'handoff_release' });
+  graspStatusEl.textContent = 'Release: moving to Home…';
+});
+document.getElementById('unlock-pan-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  send({ type: 'grasp_unlock_pan' });
+  panLocked = false;
+  panSlider.disabled = false;
+});
+
+const locSelect = document.getElementById('loc-select');
+const navStatusEl = document.getElementById('nav-status');
+function setNavStatus(text){
+  navStatusEl.textContent = text || '';
+}
+function fillLocations(names){
+  const prev = locSelect.value;
+  locSelect.innerHTML = '<option value="">— select location —</option>';
+  names.forEach(n => {
+    const opt = document.createElement('option');
+    opt.value = n; opt.textContent = n.replace(/_/g,' ');
+    locSelect.appendChild(opt);
+  });
+  if (prev && names.includes(prev)) locSelect.value = prev;
+}
+document.getElementById('go-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const name = locSelect.value;
+  if (!name) { alert('Pick a location first'); return; }
+  if (confirm('Navigate to "' + name.replace(/_/g,' ') + '"?')) {
+    send({ type: 'navigate', name });
+  }
+});
+document.getElementById('cancel-nav-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  send({ type: 'cancel_nav' });
+  setNavStatus('Cancel requested…');
+});
+document.getElementById('restart-nav-btn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (!confirm('Reset Nav2 like the RViz panel (Reset → Startup)?\n\nCancels the current goal and reactivates the Nav2 lifecycle.')) {
+    return;
+  }
+  send({ type: 'restart_nav' });
+  setNavStatus('Resetting Nav2…');
+});
+
+function updateJoints(j){ for (const [n,d] of Object.entries(j)){ const el=document.getElementById('j-'+n); if(el && !el.dataset.editing) el.textContent=d.toFixed(1)+'°'; } }
+
+// Camera — poll latest JPEG (multipart MJPEG is buffered for seconds by Chrome).
+const cam = document.getElementById('camera');
+const camOff = document.getElementById('camera-off');
+const wide = document.getElementById('wide');
+const wideOff = document.getElementById('wide-off');
+
+function startLatestJpeg(img, offEl, path, onFrame){
+  let inflight = false;
+  let fails = 0;
+  const tick = () => {
+    if (document.visibilityState !== 'visible') {
+      setTimeout(tick, 250);
+      return;
+    }
+    if (inflight) {
+      setTimeout(tick, 40);
+      return;
+    }
+    inflight = true;
+    const next = new Image();
+    const watchdog = setTimeout(() => {
+      next.onload = null;
+      next.onerror = null;
+      next.src = '';
+      inflight = false;
+      fails += 1;
+      setTimeout(tick, 120);
+    }, 2000);
+    next.onload = () => {
+      clearTimeout(watchdog);
+      img.src = next.src;
+      if (offEl) offEl.style.display = 'none';
+      inflight = false;
+      fails = 0;
+      if (typeof onFrame === 'function') onFrame();
+      setTimeout(tick, 90);
+    };
+    next.onerror = () => {
+      clearTimeout(watchdog);
+      inflight = false;
+      fails += 1;
+      if (offEl && fails > 4) {
+        offEl.style.display = 'block';
+        offEl.textContent = 'unavailable';
+      }
+      setTimeout(tick, 250);
+    };
+    next.src = `http://${location.hostname}:8081${path}.jpg?t=${Date.now()}`;
+  };
+  tick();
+}
+startLatestJpeg(cam, camOff, '/d435i', () => {
+  if (lastReachMask) drawReachOverlay(lastReachMask);
+});
+startLatestJpeg(wide, wideOff, '/wide');
+
+// Stick state
+const arm = { lx:0, ly:0, rx:0, ry:0 };
+const drive = { dx:0, dy:0 };
+let sendTimer = null;
+function startSending(){ if(sendTimer) return; sendTimer=setInterval(()=>{ send({type:'arm',...arm}); send({type:'drive',...drive}); }, 50); }
+function maybeStop(){
+  if(arm.lx===0&&arm.ly===0&&arm.rx===0&&arm.ry===0&&drive.dx===0&&drive.dy===0){
+    clearInterval(sendTimer); sendTimer=null;
+    send({type:'arm',lx:0,ly:0,rx:0,ry:0}); send({type:'drive',dx:0,dy:0});
+  }
+}
+
+function makeStick(outerEl, knobEl, onMove, onRelease){
+  let active=false, pid=null, cx=0, cy=0, radius=0;
+  function rect(){ const r=outerEl.getBoundingClientRect(); cx=r.left+r.width/2; cy=r.top+r.height/2; radius=r.width/2; }
+  function apply(px,py){
+    let dx=px-cx, dy=py-cy; const dist=Math.hypot(dx,dy), maxR=radius*0.58;
+    if(dist>maxR){ dx*=maxR/dist; dy*=maxR/dist; }
+    knobEl.style.transform=`translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    onMove(dx/maxR, dy/maxR);
+  }
+  function release(){ if(!active) return; active=false; pid=null; outerEl.classList.remove('active'); knobEl.style.transform='translate(-50%,-50%)'; onRelease(); }
+  outerEl.addEventListener('pointerdown',(e)=>{ e.preventDefault(); outerEl.setPointerCapture(e.pointerId); active=true; pid=e.pointerId; outerEl.classList.add('active'); rect(); apply(e.clientX,e.clientY); startSending(); });
+  outerEl.addEventListener('pointermove',(e)=>{ if(!active||e.pointerId!==pid) return; e.preventDefault(); apply(e.clientX,e.clientY); });
+  outerEl.addEventListener('pointerup',release);
+  outerEl.addEventListener('pointercancel',release);
+}
+
+makeStick(document.getElementById('stick-arm1'), document.getElementById('knob-arm1'),
+  (x,y)=>{ arm.lx=x; arm.ly=y; }, ()=>{ arm.lx=0; arm.ly=0; maybeStop(); });
+makeStick(document.getElementById('stick-arm2'), document.getElementById('knob-arm2'),
+  (x,y)=>{ arm.rx=x; arm.ry=y; }, ()=>{ arm.rx=0; arm.ry=0; maybeStop(); });
+makeStick(document.getElementById('stick-drive'), document.getElementById('knob-drive'),
+  (x,y)=>{ drive.dx=x; drive.dy=y; }, ()=>{ drive.dx=0; drive.dy=0; maybeStop(); });
+
+// Gripper
+const gripperSlider = document.getElementById('gripper-slider');
+const gripperVal = document.getElementById('gripper-val');
+function updateGripperLabel(v){ if(v>=95) gripperVal.textContent='OPEN'; else if(v<=5) gripperVal.textContent='CLOSED'; else gripperVal.textContent=v+'%'; }
+let _gripTimer=null, _gripLastSent=-1, _gripDragging=false;
+function sendGripper(v){
+  updateGripperLabel(v);
+  if (Math.abs(v - _gripLastSent) < 2 && _gripLastSent>=0) return;
+  _gripLastSent=v;
+  send({type:'gripper', value:v/100.0});
+}
+function updateGripperFromState(pct){
+  if (pct == null || _gripDragging) return;
+  const v = Math.max(0, Math.min(100, parseInt(pct)));
+  if (isNaN(v)) return;
+  if (Math.abs(v - parseInt(gripperSlider.value)) < 2) return;
+  gripperSlider.value = v;
+  updateGripperLabel(v);
+}
+gripperSlider.addEventListener('pointerdown', ()=>{ _gripDragging=true; });
+gripperSlider.addEventListener('pointerup', ()=>{ _gripDragging=false; });
+gripperSlider.addEventListener('pointercancel', ()=>{ _gripDragging=false; });
+gripperSlider.addEventListener('input',(e)=>{
+  _gripDragging=true;
+  const v=parseInt(e.target.value);
+  updateGripperLabel(v);
+  if (_gripTimer) clearTimeout(_gripTimer);
+  _gripTimer=setTimeout(()=>sendGripper(v), 80);
+});
+gripperSlider.addEventListener('change',(e)=>{
+  const v=parseInt(e.target.value);
+  if (_gripTimer) clearTimeout(_gripTimer);
+  sendGripper(v);
+  _gripDragging=false;
+});
+
+const panSlider = document.getElementById('pan-slider');
+const panVal = document.getElementById('pan-val');
+function updatePanLabel(v){ const deg=Math.round(60 + (v/100)*214); panVal.textContent=deg+'°'; }
+let _panTimer=null, _panDragging=false;
+function sendPan(v){
+  if (panLocked) return;
+  updatePanLabel(v);
+  send({type:'pan', value:v/100.0});
+}
+function updatePanFromState(pct){
+  if (pct == null || _panDragging || panLocked) return;
+  const v = Math.max(0, Math.min(100, parseInt(pct)));
+  if (isNaN(v)) return;
+  if (Math.abs(v - parseInt(panSlider.value)) < 2) return;
+  panSlider.value = v;
+  updatePanLabel(v);
+}
+panSlider.addEventListener('pointerdown', ()=>{ _panDragging=true; });
+panSlider.addEventListener('pointerup', ()=>{ _panDragging=false; });
+panSlider.addEventListener('pointercancel', ()=>{ _panDragging=false; });
+panSlider.addEventListener('input',(e)=>{
+  if (panLocked) return;
+  _panDragging=true;
+  const v=parseInt(e.target.value);
+  updatePanLabel(v);
+  if (_panTimer) clearTimeout(_panTimer);
+  _panTimer=setTimeout(()=>sendPan(v), 40);
+});
+panSlider.addEventListener('change',(e)=>{
+  if (panLocked) return;
+  const v=parseInt(e.target.value);
+  if (_panTimer) clearTimeout(_panTimer);
+  sendPan(v);
+  _panDragging=false;
+});
+
+// Pose buttons
+document.getElementById('home-btn').addEventListener('pointerdown',(e)=>{ e.preventDefault(); send({type:'home'}); });
+document.getElementById('sleep-btn').addEventListener('pointerdown',(e)=>{ e.preventDefault(); send({type:'sleep'}); });
+document.getElementById('dock-btn').addEventListener('pointerdown',(e)=>{ e.preventDefault(); if(confirm('Send robot to dock?')) send({type:'dock'}); });
+document.getElementById('undock-btn').addEventListener('pointerdown',(e)=>{ e.preventDefault(); if(confirm('Undock robot?')) send({type:'undock'}); });
+
+// Keyboard: WASD arm-base, IJKL arm-wrist, arrows drive
+const held=new Set();
+function guiKeysBlocked(){ return document.body.classList.contains('guide-open'); }
+document.addEventListener('keydown',(e)=>{
+  if (e.code==='Escape' && document.body.classList.contains('guide-open')) {
+    e.preventDefault(); setGuideOpen(false); return;
+  }
+  if (guiKeysBlocked()) return;
+  if(held.has(e.code))return; held.add(e.code); updateKeys(); if(held.size) startSending();
+});
+document.addEventListener('keyup',(e)=>{ if (guiKeysBlocked()) return; held.delete(e.code); updateKeys(); maybeStop(); });
+function updateKeys(){
+  arm.lx=(held.has('KeyD')?1:0)-(held.has('KeyA')?1:0);
+  arm.ly=(held.has('KeyS')?1:0)-(held.has('KeyW')?1:0);
+  arm.rx=(held.has('KeyL')?1:0)-(held.has('KeyJ')?1:0);
+  arm.ry=(held.has('KeyK')?1:0)-(held.has('KeyI')?1:0);
+  drive.dx=(held.has('ArrowRight')?1:0)-(held.has('ArrowLeft')?1:0);
+  drive.dy=(held.has('ArrowDown')?1:0)-(held.has('ArrowUp')?1:0);
+}
+document.addEventListener('keydown',(e)=>{
+  if (guiKeysBlocked()) return;
+  if(e.code==='Space'){ e.preventDefault(); const o=parseInt(gripperSlider.value)<50; send({type:'gripper',value:o?1.0:0.0}); } if(e.code==='KeyH') send({type:'home'}); if(e.code==='KeyZ') send({type:'sleep'});
+});
+</script>
+</body>
+</html>
