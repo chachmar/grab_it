@@ -1,0 +1,309 @@
+<?xml version="1.0"?>
+<!--
+  px150_no_elbow_create3.urdf.xacro
+
+  Combined robot: iRobot Create 3 + PX150 no-elbow arm + D435i
+
+  Physical payload stack (bottom → top on Create 3 top_plate):
+    ┌─────────────────────────────────────┐
+    │  D435i on pan bracket               │  90×25×25mm, 72g
+    │  Dynamixel pan servo (joint 'pan')  │  28.5×34×46.5mm, 57g  ← ID 4
+    │  Waveshare Jetson Nano Case (C)     │  110×80×55mm,  ~350g
+    │  NVIDIA Jetson AGX Orin Dev Kit     │  110×110×71.65mm, ~1700g
+    │  Omnicharge Omni 20 Battery (upper) │  127×122×27mm,  630g
+    │  Omnicharge Omni 20 Battery (lower) │  127×122×27mm,  630g
+    │  PX150 arm base electronics block   │  64×64×52mm
+    └── top_plate_link ──────────────────┘
+
+  Xacro parameters:
+    battery_x_offset   : fore/aft position of Omni 20 on top plate (default -0.010m)
+    agx_x_offset       : fore/aft position of AGX Orin (default 0.0m)
+    nano_x_offset      : fore/aft position of Nano case (default 0.0m)
+    cam_x_offset       : pan servo x offset on nano case top (default 0.088m)
+    cam_z_offset       : D435i z offset above pan bracket (default 0.030m)
+    cam_pitch          : fixed D435i pitch (rad); floor-fit ≈ −0.046
+    cam_mount_z_extra  : mount height bias upstream of pan (default 0.054m)
+    wide_cam_*         : Innomaker 32×32 USB on wrist_rotate servo housing (not spinning jaws)
+-->
+
+<robot name="px150_no_elbow_create3" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ===================================================================
+       PARAMETERS
+  ==================================================================== -->
+  <xacro:arg name="battery_x_offset" default="-0.135"/>
+  <xacro:arg name="agx_x_offset"     default="-0.135"/>
+  <xacro:arg name="nano_x_offset"    default="-0.135"/>
+  <xacro:arg name="stack_z_base"     default="0.037"/>
+  <xacro:arg name="include_create3"  default="true"/>
+  <xacro:arg name="deck_z"           default="0.0921"/>
+  <xacro:arg name="mount_x"          default="0.06"/>
+  <xacro:property name="body_cog_x_offset" value="0"/>  <!-- height of stack base above top_plate -->
+  <!-- Optical centre is ~7.8 cm forward of the URDF nano→pan origin (measured). -->
+  <xacro:arg name="cam_x_offset"     default="0.088"/>
+  <xacro:arg name="cam_z_offset"     default="0.0275"/>
+  <!-- Floor-plane fit: static pitch ≈ −2.63° (was wrongly assumed +20°). -->
+  <xacro:arg name="cam_pitch"        default="-0.046"/>
+  <!-- Mount height error upstream of pan (measured +5.4 cm). -->
+  <xacro:arg name="cam_mount_z_extra" default="0.054"/>
+  <xacro:property name="cam_mount_dz" value="$(arg cam_mount_z_extra)"/>
+  <xacro:arg name="use_gripper"      default="true"/>
+  <!-- Wide USB on ee_arm_link (wrist_rotate servo housing). Coaxial with
+       gripper, several cm back; does not spin with ee_gripper_link. -->
+  <xacro:arg name="wide_cam_x"       default="-0.050"/>
+  <xacro:arg name="wide_cam_y"       default="0.0"/>
+  <xacro:arg name="wide_cam_z"       default="-0.030"/>
+  <!-- camera_link X = ee_arm +X (gripper). Pitch -90 pointed optical Z up. -->
+  <xacro:arg name="wide_cam_pitch"   default="0.0"/>
+
+
+  <!-- Create 3 geometry -->
+  <xacro:property name="c3_radius"   value="0.1745"/>
+  <xacro:property name="c3_h_half"   value="0.0762"/>   <!-- half height = body offset above floor -->
+  <xacro:property name="top_z"       value="0.0381"/>   <!-- half body height = top plate offset -->
+
+  <!-- Payload stack heights (all relative to top_plate surface = z=0) -->
+  <xacro:property name="arm_block_h"   value="0.052"/>  <!-- PX150 base electronics block -->
+  <xacro:property name="battery_h"     value="0.027"/>  <!-- Omni 20, each -->
+  <xacro:property name="n_batteries"   value="2"/>      <!-- stacked count -->
+  <xacro:property name="servo_h"       value="0.0465"/> <!-- Dynamixel XL430 height -->
+  <xacro:property name="agx_h"         value="0.07165"/><!-- AGX Orin dev kit -->
+  <xacro:property name="nano_h"        value="0.055"/>  <!-- Waveshare Nano Case (C) est. -->
+
+  <!-- Cumulative z positions of centers -->
+  <xacro:property name="stack_z" value="$(arg stack_z_base)"/>
+  <xacro:property name="battery1_z" value="${stack_z + battery_h/2}"/>
+  <xacro:property name="battery2_z" value="${stack_z + battery_h*1.5}"/>
+  <xacro:property name="agx_z"      value="${stack_z + battery_h*n_batteries + agx_h/2}"/>
+  <xacro:property name="nano_z"     value="${stack_z + battery_h*n_batteries + agx_h + nano_h/2}"/>
+
+  <!-- ===================================================================
+       MATERIALS
+  ==================================================================== -->
+  <material name="black">       <color rgba="0.08 0.08 0.08 1.0"/></material>
+  <material name="dark_grey">   <color rgba="0.20 0.20 0.20 1.0"/></material>
+  <material name="mid_grey">    <color rgba="0.40 0.40 0.40 1.0"/></material>
+  <material name="silver">      <color rgba="0.70 0.70 0.70 1.0"/></material>
+  <material name="omni_black">  <color rgba="0.12 0.12 0.12 1.0"/></material>
+
+  <!-- ===================================================================
+       INERTIA MACROS
+  ==================================================================== -->
+  <xacro:macro name="box_inertia" params="m x y z">
+    <inertial>
+      <mass value="${m}"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia
+        ixx="${(m/12)*(y*y + z*z)}" ixy="0" ixz="0"
+        iyy="${(m/12)*(x*x + z*z)}" iyz="0"
+        izz="${(m/12)*(x*x + y*y)}"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="cyl_inertia" params="m r l">
+    <inertial>
+      <mass value="${m}"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia
+        ixx="${(m/12)*(3*r*r + l*l)}" ixy="0" ixz="0"
+        iyy="${(m/12)*(3*r*r + l*l)}" iyz="0"
+        izz="${(m/2)*r*r}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- ===================================================================
+       CREATE 3 BASE
+  ==================================================================== -->
+    <link name="base_footprint"/>
+
+  <xacro:if value="$(arg include_create3)">
+    <xacro:include filename="$(find irobot_create_description)/urdf/create3.urdf.xacro"/>
+    <joint name="base_footprint_to_base_link" type="fixed">
+      <parent link="base_footprint"/>
+      <child  link="base_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+  </xacro:if>
+
+  <joint name="base_link_to_top_plate" type="fixed">
+    <parent link="base_link"/>
+    <child  link="top_plate_link"/>
+    <origin xyz="$(arg mount_x) 0 $(arg deck_z)" rpy="0 0 0"/>
+  </joint>
+  <link name="top_plate_link"/>
+
+  
+
+  <!-- ===================================================================
+       INTERBOTIX PX150 (no-elbow) — real meshes from interbotix package
+       Arm root = px150_no_elbow/base_link, attached to top_plate_link.
+       Joint names stay unprefixed (waist, shoulder, forearm_roll,
+       wrist_angle, wrist_rotate, left_finger, right_finger, gripper)
+       so xs_sdk /joint_states drives the model directly.
+  ==================================================================== -->
+  <xacro:arg name="robot_name"    default="px150_no_elbow"/>
+  <xacro:arg name="hardware_type" default="actual"/>
+
+  <xacro:include filename="$(find interbotix_xsarm_descriptions)/urdf/px150_no_elbow.urdf.xacro"/>
+
+  <joint name="top_plate_to_arm_base" type="fixed">
+    <parent link="top_plate_link"/>
+    <child  link="$(arg robot_name)/base_link"/>
+    <origin xyz="0 0 0.004" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ===================================================================
+       OMNI 20 BATTERIES x2 (stacked)  127×122×27mm, 630g each
+  ==================================================================== -->
+  <xacro:macro name="omni20" params="suffix z">
+    <joint name="top_plate_to_omni20_${suffix}" type="fixed">
+      <parent link="top_plate_link"/>
+      <child  link="omni20_${suffix}_link"/>
+      <origin xyz="$(arg battery_x_offset) 0 ${z}" rpy="0 0 0"/>
+    </joint>
+    <link name="omni20_${suffix}_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><box size="0.127 0.122 0.027"/></geometry>
+        <material name="omni_black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><box size="0.127 0.122 0.027"/></geometry>
+      </collision>
+      <xacro:box_inertia m="0.630" x="0.127" y="0.122" z="0.027"/>
+    </link>
+  </xacro:macro>
+  <xacro:omni20 suffix="lower" z="${battery1_z}"/>
+  <xacro:omni20 suffix="upper" z="${battery2_z}"/>
+
+  <!-- ===================================================================
+       NVIDIA JETSON AGX ORIN  110×110×71.65mm, 1700g
+  ==================================================================== -->
+  <joint name="top_plate_to_agx_orin" type="fixed">
+    <parent link="top_plate_link"/>
+    <child  link="agx_orin_link"/>
+    <origin xyz="$(arg agx_x_offset) 0 ${agx_z}" rpy="0 0 0"/>
+  </joint>
+  <link name="agx_orin_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.110 0.110 0.07165"/></geometry>
+      <material name="dark_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.110 0.110 0.07165"/></geometry>
+    </collision>
+    <xacro:box_inertia m="1.700" x="0.110" y="0.110" z="0.07165"/>
+  </link>
+
+  <!-- ===================================================================
+       WAVESHARE JETSON NANO CASE (C)  110×80×55mm est., 350g
+  ==================================================================== -->
+  <joint name="top_plate_to_nano_case" type="fixed">
+    <parent link="top_plate_link"/>
+    <child  link="nano_case_link"/>
+    <origin xyz="$(arg nano_x_offset) 0 ${nano_z}" rpy="0 0 0"/>
+  </joint>
+  <link name="nano_case_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.110 0.080 0.055"/></geometry>
+      <material name="mid_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.110 0.080 0.055"/></geometry>
+    </collision>
+    <xacro:box_inertia m="0.350" x="0.110" y="0.080" z="0.055"/>
+  </link>
+
+  <!-- ===================================================================
+       CAMERA PAN ASSEMBLY on Waveshare Nano case camera mount
+       Dynamixel servo (ID 4, joint name 'pan') + pan bracket + D435i
+  ==================================================================== -->
+  <joint name="nano_case_to_pan_servo" type="fixed">
+    <parent link="nano_case_link"/>
+    <child  link="pan_servo_link"/>
+    <origin xyz="$(arg cam_x_offset) 0 ${nano_h/2 + servo_h/2 + cam_mount_dz}" rpy="0 0 0"/>
+  </joint>
+  <link name="pan_servo_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.034 0.0285 ${servo_h}"/></geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.034 0.0285 ${servo_h}"/></geometry>
+    </collision>
+    <xacro:box_inertia m="0.057" x="0.034" y="0.0285" z="${servo_h}"/>
+  </link>
+
+  <!-- Tilt servo (Dynamixel ID 4): horn axis is Y, camera pitches up/down -->
+  <joint name="pan" type="revolute">
+    <parent link="pan_servo_link"/>
+    <child  link="pan_bracket_link"/>
+    <origin xyz="0 0 ${servo_h/2}" rpy="0 0 0"/>
+    <axis   xyz="0 1 0"/>
+    <limit  lower="${radians(-90)}" upper="${radians(45)}" effort="1.5" velocity="${pi/2}"/>
+    <dynamics damping="0.1" friction="0.1"/>
+  </joint>
+  <link name="pan_bracket_link">
+    <visual>
+      <origin xyz="0 0 0.0075" rpy="0 ${pi/2} 0"/>
+      <geometry><box size="0.040 0.030 0.015"/></geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.0075" rpy="0 ${pi/2} 0"/>
+      <geometry><box size="0.040 0.030 0.015"/></geometry>
+    </collision>
+    <xacro:box_inertia m="0.020" x="0.040" y="0.030" z="0.015"/>
+  </link>
+
+  <!-- ===================================================================
+       INTEL REALSENSE D435i  90×25×25mm, 72g — rotates with pan joint
+  ==================================================================== -->
+  <!-- Real Intel RealSense D435i from realsense2_description -->
+  <xacro:include filename="$(find realsense2_description)/urdf/_d435i.urdf.xacro"/>
+  <xacro:sensor_d435i parent="pan_bracket_link" name="d435i" use_nominal_extrinsics="true">
+    <!-- Pitch down so table-plane clicks match the real D435i / camera_tf.env. -->
+    <origin xyz="0.005 0 $(arg cam_z_offset)" rpy="0 $(arg cam_pitch) 0"/>
+  </xacro:sensor_d435i>
+
+  <!-- ===================================================================
+       WIDE USB CAM — Innomaker 32×32 on the wrist_rotate servo housing.
+       Parent is ee_arm_link (stator). ee_gripper_link spins with wrist_rotate;
+       the camera does not. Optical frame must match usb_cam ('wide_cam').
+  ==================================================================== -->
+  <joint name="ee_arm_to_wide_cam" type="fixed">
+    <parent link="$(arg robot_name)/ee_arm_link"/>
+    <child  link="wide_cam_link"/>
+    <!-- pitch=0: camera_link +X along gripper. Optical Z = camera_link +X. -->
+    <origin xyz="$(arg wide_cam_x) $(arg wide_cam_y) $(arg wide_cam_z)"
+            rpy="0 $(arg wide_cam_pitch) 0"/>
+  </joint>
+  <link name="wide_cam_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.032 0.032 0.032"/></geometry>
+      <material name="dark_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.032 0.032 0.032"/></geometry>
+    </collision>
+    <xacro:box_inertia m="0.040" x="0.032" y="0.032" z="0.032"/>
+  </link>
+  <!-- REP-103 optical: Z forward, X right, Y down (matches CameraInfo projection). -->
+  <joint name="wide_cam_optical_joint" type="fixed">
+    <parent link="wide_cam_link"/>
+    <child  link="wide_cam"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+  </joint>
+  <link name="wide_cam"/>
+
+</robot>
+

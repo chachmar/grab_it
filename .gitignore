@@ -1,0 +1,27 @@
+# Maps / RTAB databases (large, machine-specific)
+rtabmap.db
+rtabmap_backup_*.db
+*.db
+
+# TF / debug dumps
+frames_*.gv
+frames_*.pdf
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local logs
+*.log
+/tmp/
+
+# Imitation-learning datasets / checkpoints
+datasets/tabletop_pick/episode_*
+datasets/lerobot/
+grab_it_il.tgz

@@ -448,7 +448,10 @@ class GraspFromClick(Node):
         self.wrist_jaw_snap = bool(cfg.get("wrist_jaw_snap", True))
         self.click_depth_snapshot = bool(cfg.get("click_depth_snapshot", True))
         self.floor_object_max_z = float(cfg.get("floor_object_max_z", 0.14))
-        self.floor_tcp_lift = float(cfg.get("floor_tcp_lift", 0.05))
+        self.floor_tcp_lift = float(cfg.get("floor_tcp_lift", 0.02))
+        self.floor_z_min = float(cfg.get("floor_z_min", -0.08))
+        self.floor_sure_z = float(cfg.get("floor_sure_z", 0.08))
+        self.floor_min_ee_reach = float(cfg.get("floor_min_ee_reach", 0.18))
         self.d435_jpeg_url = str(
             cfg.get("d435_jpeg_url", "http://127.0.0.1:8081/d435i.jpg")
         )
@@ -2417,10 +2420,47 @@ class GraspFromClick(Node):
             return None
         top_z = float(np.percentile(pts[:, 2], 60.0))
         low = top_z <= float(self.floor_object_max_z)
-        # A mid/upper click is the standing pole, not the bag/floor in the patch.
-        if float(v_norm) < 0.58:
+        # An upper-image patch that only grazes the floor is still the pole.
+        # A top below floor_sure_z is the block, even when the camera is tilted.
+        if float(v_norm) < 0.58 and top_z >= float(self.floor_sure_z):
             low = False
         cent = np.mean(pts, axis=0)
+        # The wide patch's nearest surface is the foreground floor, which sits
+        # closer to the base than the block under the cursor. A tight window
+        # on the click is the object to grasp.
+        half = 5
+        tx0, tx1 = max(0, u_px - half), min(w, u_px + half + 1)
+        ty0, ty1 = max(0, v_px - half), min(h, v_px + half + 1)
+        tpatch = depth[ty0:ty1, tx0:tx1]
+        tvalid = (
+            np.isfinite(tpatch)
+            & (tpatch > self.min_depth)
+            & (tpatch < self.max_depth)
+        )
+        if int(np.count_nonzero(tvalid)) >= 8:
+            tys, txs = np.where(tvalid)
+            tz = tpatch[tys, txs].astype(np.float64)
+            tu = (txs + tx0).astype(np.float64)
+            tv = (tys + ty0).astype(np.float64)
+            tcam = np.stack(
+                [(tu - cx) * tz / fx, (tv - cy) * tz / fy, tz, np.ones_like(tz)],
+                axis=1,
+            )
+            tpts = (T_use @ tcam.T).T[:, :3]
+            ttop = float(np.percentile(tpts[:, 2], 60.0))
+            tc = np.median(tpts, axis=0)
+            if ttop <= float(self.floor_sure_z):
+                low = True
+            elif ttop > float(self.floor_object_max_z):
+                low = False
+            if low and ttop <= float(self.floor_object_max_z):
+                top_z = ttop
+                cent = tc
+                self.get_logger().info(
+                    f"floor click window top={ttop:.3f} "
+                    f"({float(tc[0]):.3f},{float(tc[1]):.3f},{float(tc[2]):.3f}) "
+                    f"reach={math.hypot(float(tc[0]), float(tc[1])):.3f}"
+                )
         out: dict = {
             "z": top_z,
             "low": low,
@@ -2679,10 +2719,6 @@ class GraspFromClick(Node):
                 q[ir] = self._clip_wrist_rotate(self._wrist_face)
             elif self.lock_wrist_rotate:
                 q[ir] = 0.0
-        ia = self._joint_index("wrist_angle")
-        if ia >= 0 and self._object_low:
-            # Floor objects: fold the wrist down instead of scooping up.
-            q[ia] = self._clip_wrist_angle(float(q[ia]) - 0.28)
         return q
 
     def _jaw_bbox(self) -> dict:
@@ -3827,8 +3863,40 @@ class GraspFromClick(Node):
         except (TypeError, ValueError):
             img_w = img_h = 0
         how = "pix-depth"
-        unp = self._unproject_d435i_uv(u, v, img_w, img_h)
         extra = ""
+        pixel = self._click_ray_point(u, v, img_w, img_h)
+        if pixel is not None:
+            patch = self._object_centroid
+            self.get_logger().info(
+                f"click pixel ({pixel[0]:.3f},{pixel[1]:.3f},{pixel[2]:.3f}) "
+                f"reach={math.hypot(pixel[0], pixel[1]):.3f} "
+                f"patch={None if patch is None else tuple(round(float(c), 3) for c in patch)}"
+            )
+            self._object_centroid = pixel
+            self._object_top_z = float(pixel[2])
+            if float(pixel[2]) <= float(self.floor_object_max_z):
+                self._object_low = True
+            else:
+                self._object_low = False
+                self._viz_xyz = pixel
+                self._viz_from_depth = True
+        if self._object_low and self._object_centroid is not None:
+            floored = self._apply_floor_xyz(self._object_centroid)
+            if floored is not None:
+                self._viz_xyz = floored
+                self._viz_from_depth = True
+                how = "floor-depth"
+                extra += (
+                    f" viz=floor ({floored[0]:.2f},{floored[1]:.2f},{floored[2]:.2f})"
+                )
+                self.get_logger().info(
+                    f"floor click ({floored[0]:.3f},{floored[1]:.3f},{floored[2]:.3f}) "
+                    f"reach={math.hypot(floored[0], floored[1]):.3f} "
+                    f"top={float(self._object_top_z):.3f} v={v:.2f}"
+                )
+        unp = None if self._viz_xyz is not None else self._unproject_d435i_uv(
+            u, v, img_w, img_h
+        )
         if unp is not None:
             self._viz_xyz = unp
             self._viz_from_depth = True
@@ -3839,7 +3907,7 @@ class GraspFromClick(Node):
                 f"d435i-unproject ({unp[0]:.3f},{unp[1]:.3f},{unp[2]:.3f}) "
                 f"click=({u:.3f},{v:.3f})"
             )
-        else:
+        elif self._viz_xyz is None:
             viz = self._viz_click_xyz(u, v, img_w=img_w, img_h=img_h)
             if viz is not None:
                 self._viz_xyz = viz[0]
@@ -4145,15 +4213,11 @@ class GraspFromClick(Node):
                 xyz = (float(xyz[0]) * s, float(xyz[1]) * s, float(xyz[2]))
                 method = f"{method}+farther{bias * 100:.0f}cm"
                 horiz = new_r
-        if (
-            self._object_top_z is not None
-            and self._object_low
-            and xyz is not None
-        ):
-            z = float(self._object_top_z) + float(self.floor_tcp_lift)
-            z = max(float(self.ws_min[2]) + 0.05, min(0.20, z))
-            xyz = (float(xyz[0]), float(xyz[1]), z)
-            method = f"{method}+floorZ{z:.2f}"
+        floor_xyz = self._apply_floor_xyz(xyz)
+        if floor_xyz is not None:
+            xyz = floor_xyz
+            method = f"{method}+floorZ{xyz[2]:.2f}"
+            horiz = math.hypot(xyz[0], xyz[1])
         if horiz > self.max_reach:
             return (
                 False,
@@ -4589,6 +4653,138 @@ class GraspFromClick(Node):
                 return T.copy(), fr
         return None
 
+    def _depth_at_click_pixel(
+        self, depth: np.ndarray, u: int, v: int
+    ) -> Optional[float]:
+        """Depth of the clicked pixel. A hole uses the nearest valid pixel.
+
+        Nearest in the image, not the nearest range. A range percentile pulls
+        in the floor in front of the block.
+        """
+        h, w = depth.shape[:2]
+
+        def _ok(z: float) -> bool:
+            return bool(
+                np.isfinite(z) and self.min_depth < z < self.max_depth
+            )
+
+        if 0 <= v < h and 0 <= u < w and _ok(float(depth[v, u])):
+            return float(depth[v, u])
+        for rad in range(1, 6):
+            found: List[float] = []
+            for dv in range(-rad, rad + 1):
+                for du in range(-rad, rad + 1):
+                    if max(abs(du), abs(dv)) != rad:
+                        continue
+                    uu, vv = u + du, v + dv
+                    if uu < 0 or vv < 0 or uu >= w or vv >= h:
+                        continue
+                    z = float(depth[vv, uu])
+                    if _ok(z):
+                        found.append(z)
+            if found:
+                return float(np.median(found))
+        return None
+
+    def _click_ray_point(
+        self,
+        u_norm: float,
+        v_norm: float,
+        img_w,
+        img_h,
+    ) -> Optional[Tuple[float, float, float]]:
+        """Planning-frame point of the clicked pixel along its own ray."""
+        with self._lock:
+            info = self._info
+            frame = self._depth_frame or self.camera_frame
+            depth = None if self._depth is None else self._depth.copy()
+        if info is None or depth is None:
+            return None
+        pix = self._click_k_pixels(u_norm, v_norm, img_w, img_h, info, depth)
+        if pix is None:
+            return None
+        tf = self._d435i_planning_T(frame or info.header.frame_id)
+        if tf is None:
+            return None
+        ray = self._optical_ray_unnorm(float(pix[0]), float(pix[1]), info)
+        if ray is None:
+            return None
+        u_d, v_d = self._depth_sample_uv(int(pix[0]), int(pix[1]), info, depth)
+        z_opt = self._depth_at_click_pixel(depth, u_d, v_d)
+        if z_opt is None:
+            return None
+        T, _used = tf
+        origin = np.asarray(T[:3, 3], dtype=np.float64)
+        direction = T[:3, :3] @ np.asarray(ray, dtype=np.float64)
+        hit = origin + float(z_opt) * direction
+        if not np.all(np.isfinite(hit)):
+            return None
+        # The center pixel is the near face. The jaws have to reach the
+        # floor under that pixel, which the surrounding depth still sees.
+        floor_z = self._floor_z_around_click(
+            depth, u_d, v_d, info, T, (float(hit[0]), float(hit[1]))
+        )
+        if floor_z is not None:
+            grasp_z = float(floor_z) + float(self.floor_tcp_lift)
+            if float(hit[2]) > grasp_z + 0.015:
+                dz = float(direction[2])
+                if abs(dz) > 1e-6:
+                    t_hit = (grasp_z - float(origin[2])) / dz
+                    if 0.05 < t_hit < 1.30:
+                        lowered = origin + t_hit * direction
+                        if np.all(np.isfinite(lowered)):
+                            self.get_logger().info(
+                                f"click ray to floor {float(hit[2]):.3f}"
+                                f"→{float(lowered[2]):.3f} "
+                                f"({float(lowered[0]):.3f},{float(lowered[1]):.3f})"
+                            )
+                            hit = lowered
+        return (float(hit[0]), float(hit[1]), float(hit[2]))
+
+    def _floor_z_around_click(
+        self,
+        depth: np.ndarray,
+        u_d: int,
+        v_d: int,
+        info: CameraInfo,
+        T: np.ndarray,
+        near_xy: Tuple[float, float],
+    ) -> Optional[float]:
+        """Height of the surface under the click, not the near face."""
+        fx, fy = float(info.k[0]), float(info.k[4])
+        cx, cy = float(info.k[2]), float(info.k[5])
+        if fx < 1.0 or fy < 1.0:
+            return None
+        h, w = depth.shape[:2]
+        iw = int(info.width) if info.width else w
+        ih = int(info.height) if info.height else h
+        R = T[:3, :3]
+        origin = np.asarray(T[:3, 3], dtype=np.float64)
+        zs: List[float] = []
+        rad = 48
+        for vv in range(max(0, v_d - rad), min(h, v_d + rad + 1), 4):
+            for uu in range(max(0, u_d - rad), min(w, u_d + rad + 1), 4):
+                z = float(depth[vv, uu])
+                if not (np.isfinite(z) and self.min_depth < z < self.max_depth):
+                    continue
+                if iw != w or ih != h:
+                    ku = uu * (iw - 1) / max(1, w - 1)
+                    kv = vv * (ih - 1) / max(1, h - 1)
+                else:
+                    ku, kv = float(uu), float(vv)
+                ray = np.array(
+                    [(ku - cx) / fx, (kv - cy) / fy, 1.0], dtype=np.float64
+                )
+                p = origin + z * (R @ ray)
+                if abs(float(p[0]) - near_xy[0]) > 0.18:
+                    continue
+                if abs(float(p[1]) - near_xy[1]) > 0.18:
+                    continue
+                zs.append(float(p[2]))
+        if len(zs) < 12:
+            return None
+        return float(np.percentile(zs, 20.0))
+
     def _optical_ray_unnorm(
         self, u_px: float, v_px: float, info: CameraInfo
     ) -> Optional[np.ndarray]:
@@ -4912,6 +5108,168 @@ class GraspFromClick(Node):
         """Horizontal plane the click ray should hit (object mid-height, not floor)."""
         return float(self.table_z + self.object_height)
 
+    def _floor_target_z(self, top_z: float) -> float:
+        """Measured top plus a small clearance, allowed down to the floor minimum."""
+        z = float(top_z) + float(self.floor_tcp_lift)
+        return max(
+            float(self.floor_z_min),
+            min(float(self.floor_object_max_z), z),
+        )
+
+    def _apply_floor_xyz(
+        self, xyz: Tuple[float, float, float]
+    ) -> Optional[Tuple[float, float, float]]:
+        """Keep the measured click. Do not move it onto another plane."""
+        if not self._object_low or self._object_centroid is None:
+            return None
+        src = self._object_centroid
+        return (float(src[0]), float(src[1]), float(src[2]))
+
+    def _floor_ray_xyz(
+        self,
+        u_norm: float,
+        v_norm: float,
+        img_w,
+        img_h,
+    ) -> Optional[Tuple[float, float, float]]:
+        """Click ray at the measured range, pitched onto the floor.
+
+        Pitch is about the camera's horizontal axis, so the point stays on the
+        clicked column. Scaling the base-frame azimuth shoves it sideways.
+        """
+        with self._lock:
+            info = self._info
+            frame = self._depth_frame or self.camera_frame
+            depth = None if self._depth is None else self._depth.copy()
+        if info is None:
+            return None
+        pix = self._click_k_pixels(u_norm, v_norm, img_w, img_h, info, depth)
+        if pix is None:
+            return None
+        tf = self._d435i_planning_T(frame or info.header.frame_id)
+        if tf is None:
+            return None
+        T, _used = tf
+        ray = self._optical_ray_unnorm(float(pix[0]), float(pix[1]), info)
+        if ray is None:
+            return None
+        origin = np.array(T[:3, 3], dtype=np.float64)
+        direction = self._pan_undo_dir(T[:3, :3] @ np.asarray(ray, dtype=np.float64))
+        dz = float(direction[2])
+        if abs(dz) < 1e-6:
+            return None
+        if self._object_top_z is not None:
+            plane_z = self._floor_target_z(float(self._object_top_z))
+        else:
+            plane_z = float(self.floor_z_min)
+        t_hit = (plane_z - float(origin[2])) / dz
+        hit = None
+        z_opt = self._floor_optical_z(depth, pix, info)
+        if z_opt is not None:
+            measured = origin + float(z_opt) * direction
+            if float(measured[2]) >= 0.02:
+                hit = measured
+            else:
+                hit = self._pitch_onto_floor(
+                    origin, measured, plane_z, T[:3, :3][:, 0]
+                )
+        if hit is None:
+            if t_hit <= 0.05 or t_hit > 1.30:
+                return None
+            hit = origin + t_hit * direction
+        if float(hit[0]) < 0.02:
+            return None
+        horiz = float(math.hypot(float(hit[0]), float(hit[1])))
+        if horiz > min(2.5, float(self.max_reach)):
+            return None
+        return (float(hit[0]), float(hit[1]), plane_z)
+
+    def _floor_optical_z(
+        self,
+        depth: Optional[np.ndarray],
+        pix: Tuple[int, int],
+        info: CameraInfo,
+    ) -> Optional[float]:
+        """Median range at the click. No standing-object reject."""
+        if depth is None:
+            return None
+        u_d, v_d = self._depth_sample_uv(int(pix[0]), int(pix[1]), info, depth)
+        half = 2
+        h, w = depth.shape[:2]
+        patch = depth[
+            max(0, v_d - half) : min(h, v_d + half + 1),
+            max(0, u_d - half) : min(w, u_d + half + 1),
+        ]
+        valid = patch[
+            np.isfinite(patch) & (patch > self.min_depth) & (patch < self.max_depth)
+        ]
+        if valid.size < 5:
+            return None
+        z_opt = float(np.median(valid))
+        if z_opt <= 0.05 or z_opt > 1.30:
+            return None
+        return z_opt
+
+    def _pitch_onto_floor(
+        self,
+        origin: np.ndarray,
+        measured: np.ndarray,
+        plane_z: float,
+        cam_x: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        """Rotate the measured point about image-horizontal onto the floor.
+
+        Image-horizontal is the camera X axis. That changes height in the
+        image and leaves the clicked column. A base-frame azimuth scale does
+        not, and it walks the point off to the side.
+        """
+        axis = np.asarray(cam_x, dtype=np.float64)
+        an = float(np.linalg.norm(axis))
+        if an < 1e-6:
+            return None
+        axis = axis / an
+        delta = np.asarray(measured, dtype=np.float64) - np.asarray(
+            origin, dtype=np.float64
+        )
+        par = float(np.dot(delta, axis)) * axis
+        perp = delta - par
+        length = float(np.linalg.norm(perp))
+        if length < 1e-4:
+            return None
+        z_perp = (float(plane_z) - float(origin[2])) - float(par[2])
+        if abs(z_perp) > length + 1e-6:
+            return None
+        e1 = perp / length
+        e2 = np.cross(axis, e1)
+        e2n = float(np.linalg.norm(e2))
+        if e2n < 1e-6:
+            return None
+        e2 = e2 / e2n
+        a_c = float(e1[2])
+        b_c = float(e2[2])
+        scale = math.hypot(a_c, b_c)
+        if scale < 1e-6:
+            return None
+        rhs = max(-1.0, min(1.0, (z_perp / length) / scale))
+        phi = math.atan2(b_c, a_c)
+        turn = math.acos(rhs)
+        best = None
+        best_abs = 1e9
+        for theta in (phi + turn, phi - turn):
+            theta = (theta + math.pi) % (2.0 * math.pi) - math.pi
+            if abs(theta) < best_abs:
+                best_abs = abs(theta)
+                best = theta
+        if best is None:
+            return None
+        perp2 = length * (math.cos(best) * e1 + math.sin(best) * e2)
+        hit = np.asarray(origin, dtype=np.float64) + par + perp2
+        hit[2] = float(plane_z)
+        self.get_logger().info(
+            f"floor pitch {math.degrees(best):+.1f}° about camera X"
+        )
+        return hit
+
     def _pan_undo_dir(self, direction: np.ndarray) -> np.ndarray:
         """Pitch the look ray up — URDF pan+cam_pitch is steeper than the real D435i."""
         pan = float(self._pan_pos) if self._pan_pos is not None else 0.0
@@ -5016,8 +5374,11 @@ class GraspFromClick(Node):
         self, contact: Tuple[float, float, float]
     ) -> Tuple[float, float, float]:
         """EE origin so the gripper-bar center sits on `contact`."""
-        hx, hy = self._approach_xy_hat(contact)
+        if self._object_low:
+            # Floor IK solves the gripper link, so this point is the jaws.
+            return (float(contact[0]), float(contact[1]), float(contact[2]))
         b = float(self.gripper_bar_offset_x)
+        hx, hy = self._approach_xy_hat(contact)
         return (
             float(contact[0]) - b * hx,
             float(contact[1]) - b * hy,
@@ -5081,9 +5442,9 @@ class GraspFromClick(Node):
         """
         contact = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
         how = "viz"
-        # Prefer depth-along-ray XY only when it stays near the click and
-        # does not invent a far table hit.
-        depth_p = self._pan_depth_xyz(xyz)
+        # Pole clicks re-aim along the look ray. A floor click is already the
+        # ray at floor height; that re-aim slides the block sideways.
+        depth_p = None if self._object_low else self._pan_depth_xyz(xyz)
         if depth_p is not None:
             dh = math.hypot(depth_p[0], depth_p[1])
             ch = math.hypot(contact[0], contact[1])
@@ -5135,7 +5496,9 @@ class GraspFromClick(Node):
     ) -> Tuple[Optional[List[float]], Tuple[float, float, float], Tuple[float, float, float]]:
         """Solve pre-grasp; on failure walk the target inward along heading."""
         def _try(pre: Tuple[float, float, float], contact: Tuple[float, float, float]):
-            for zoff in (0.00, -0.02, 0.02, -0.04):
+            # Negative offsets drop a floor click under the block.
+            zoffs = (0.00, 0.02) if self._object_low else (0.00, -0.02, 0.02, -0.04)
+            for zoff in zoffs:
                 if self._is_cancelled(gen):
                     return None
                 q = self._solve_ik(self._pose_at(pre, zoff), gen)
@@ -5146,6 +5509,9 @@ class GraspFromClick(Node):
         q = _try(pre_xyz, ik_xyz)
         if q is not None or self._is_cancelled(gen):
             return q, pre_xyz, ik_xyz
+        # A floor target that is already too close cannot be fixed by walking in.
+        if self._object_low:
+            return None, pre_xyz, ik_xyz
 
         hx, hy = self._approach_xy_hat(ik_xyz)
         # Walk contact toward the base until MoveIt accepts a pose.
@@ -5304,8 +5670,10 @@ class GraspFromClick(Node):
         return self._in_workspace(xyz)
 
     def _xyz_is_grasp_object(self, xyz: Tuple[float, float, float]) -> bool:
-        """True if point sits above the table (object volume), not the tabletop."""
+        """True for a floor block or a point in the tabletop object volume."""
         z = float(xyz[2])
+        if 0.02 <= z <= float(self.floor_object_max_z):
+            return True
         lo = float(self.table_z) + float(self.d435i_reach_min_above_table)
         hi = float(self.table_z) + float(self.d435i_reach_max_above_table)
         return lo <= z <= hi
@@ -5320,7 +5688,7 @@ class GraspFromClick(Node):
     def _compute_d435i_reach_mask(self) -> Optional[dict]:
         """Blue = in-reach object pixels (prefer depth; JPEG contrast fallback).
 
-        Depth path: elevated points (above table) inside workspace.
+        Depth path: floor-height and tabletop points inside workspace.
         Fallback: MJPEG contrast blobs whose table-plane hit is graspable —
         used when aligned-depth is not bridged to the AGX.
         """
@@ -5493,7 +5861,8 @@ class GraspFromClick(Node):
         self._reach_warn_stamp = now
         self.get_logger().info(
             f"reach overlay[{how}]: {n_obj}/{total} object cells "
-            f"(above table≥{self.d435i_reach_min_above_table:.2f}m, "
+            f"(floor 0.02–{self.floor_object_max_z:.2f}m or "
+            f"above table≥{self.d435i_reach_min_above_table:.2f}m, "
             f"reach≤{self.max_reach:.2f}m)"
         )
 
@@ -5688,15 +6057,11 @@ class GraspFromClick(Node):
                 xyz = (float(xyz[0]) * s, float(xyz[1]) * s, float(xyz[2]))
                 method = f"{method}+farther{bias * 100:.0f}cm"
                 horiz = new_r
-        if (
-            self._object_top_z is not None
-            and self._object_low
-            and xyz is not None
-        ):
-            z = float(self._object_top_z) + float(self.floor_tcp_lift)
-            z = max(float(self.ws_min[2]) + 0.05, min(0.20, z))
-            xyz = (float(xyz[0]), float(xyz[1]), z)
-            method = f"{method}+floorZ{z:.2f}"
+        floor_xyz = self._apply_floor_xyz(xyz)
+        if floor_xyz is not None:
+            xyz = floor_xyz
+            method = f"{method}+floorZ{xyz[2]:.2f}"
+            horiz = math.hypot(xyz[0], xyz[1])
         if horiz > self.max_reach:
             return (
                 False,
@@ -6579,9 +6944,14 @@ class GraspFromClick(Node):
             seeded.append(s2)
         seeds = seeded
         if self.ee_link.endswith("ee_gripper_link"):
-            # Arm link first — fewer -31s; skip gripper unless needed.
             arm = self.ee_link.replace("ee_gripper_link", "ee_arm_link")
-            links = [arm] if fast else [arm, self.ee_link]
+            if self._object_low:
+                # The jaws are the tool on a floor pick. Solving the arm
+                # link puts the wrist on the click and leaves the jaws short.
+                links = [self.ee_link] if fast else [self.ee_link, arm]
+            else:
+                # Arm link first — fewer -31s; skip gripper unless needed.
+                links = [arm] if fast else [arm, self.ee_link]
         elif self.ee_link.endswith("ee_arm_link"):
             links = [self.ee_link]
             if not fast:
@@ -7758,10 +8128,29 @@ class GraspFromClick(Node):
             # Overlay stays on the depth cube. IK puts the gripper bar on
             # the click at click height, approaching along the table heading.
             ik_xyz = self._reachable_grasp_xyz(click_xyz)
-            pre_xyz = self._standoff_xyz(ik_xyz, self.grasp_standoff_m)
             horiz0 = math.hypot(ik_xyz[0], ik_xyz[1])
+            contact_h = math.hypot(float(click_xyz[0]), float(click_xyz[1]))
+            standoff = float(self.grasp_standoff_m)
+            if self._object_low:
+                # The bar offset already sets the end effector behind the block.
+                # Only the block itself, not that offset, is "too close".
+                if contact_h < float(self.floor_min_ee_reach):
+                    self._hold_gripper_open = False
+                    self._publish_status(
+                        "unreachable",
+                        f"Block is too close to the base (reach {contact_h:.2f}m)",
+                        xyz,
+                    )
+                    return
+                room = horiz0 - float(self.floor_min_ee_reach)
+                standoff = min(standoff, max(0.0, room))
+            pre_xyz = self._standoff_xyz(ik_xyz, standoff)
             # Extra hover Z shrinks the 4-DOF envelope — only use it up close.
-            if self.approach_z > 1e-4 and horiz0 < 0.30:
+            if (
+                not self._object_low
+                and self.approach_z > 1e-4
+                and horiz0 < 0.30
+            ):
                 pre_xyz = (
                     pre_xyz[0],
                     pre_xyz[1],
@@ -7790,10 +8179,14 @@ class GraspFromClick(Node):
                 return
             if q_pre is None:
                 self._hold_gripper_open = False
+                obj_h = math.hypot(float(click_xyz[0]), float(click_xyz[1]))
+                if obj_h < float(self.floor_min_ee_reach):
+                    why = "block is too close to the base"
+                else:
+                    why = "drive closer or click lower in the image"
                 self._publish_status(
                     "unreachable",
-                    f"IK failed at pre-grasp (reach {horiz:.2f}m) — "
-                    "drive closer or click lower in the image",
+                    f"IK failed at pre-grasp (reach {horiz:.2f}m) — {why}",
                     xyz,
                 )
                 return

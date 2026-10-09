@@ -1,0 +1,35 @@
+# Hand calibration in px150_no_elbow/base_link
+# Point 1 (center-ish, 2026-08-11): Z was 17cm low; XY ~ok
+# Point 2 (right, 2026-08-11): Z ok; click X 26mm too far; Y exact
+points:
+  - name: center
+    u_px: 542
+    v_px: 412
+    projected_xyz: [0.236, -0.030, 0.130]
+    origin_offset_then: [0.09, -0.008, 0.0]
+    ee_xyz: [0.2292, -0.0084, 0.3013]
+    joints: {waist: -0.0368, shoulder: 0.6519, wrist_angle: -0.4080, wrist_rotate: 0.0077}
+  - name: right
+    u_px: 721
+    v_px: 402
+    projected_xyz: [0.244, -0.100, 0.300]
+    origin_offset_then: [0.09, 0.014, 0.0]
+    ee_xyz: [0.2183, -0.0996, 0.2946]
+    joints: {waist: -0.4280, shoulder: 0.7685, wrist_angle: -0.2577, wrist_rotate: 0.0307}
+  - name: pan_down
+    u_px: 319
+    v_px: 254
+    pan_rad: 0.920
+    projected_xyz: [0.025, 0.076, 0.300]
+    ee_xyz: [0.1585, 0.0990, 0.1006]
+    joints: {waist: 0.5584, shoulder: 0.6351, wrist_angle: -1.8408, wrist_rotate: 0.0675}
+delta_ee_minus_click_right: [-0.026, 0.000, -0.005]
+applied:
+  grasp_tcp_z: 0.30
+  click_origin_offset: [0.07, 0.014, 0.0]
+  click_v_bias: 0.0
+  click_pan_scale: 0.40
+  click_pan_z_ref: 0.85
+  note: >
+    Pan-down TF look-down too steep (click X=0.03 vs EE X=0.16, Z 0.30 vs 0.10).
+    Use 40% of pan angle and blend TCP Z to the table plane when tilted down.

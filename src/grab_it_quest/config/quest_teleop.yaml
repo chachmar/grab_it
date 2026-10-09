@@ -1,0 +1,34 @@
+quest_teleop:
+  ros__parameters:
+    target: sim                 # sim | real | both
+    allow_both: false           # required when target:=both
+    rate_hz: 40.0
+    scale: 1.0                  # controller metres -> EE metres (sim)
+    real_scale: 0.4             # used when target is real or both
+    clutch_mode: grip           # grip | always (always is sim-only)
+    trigger_mode: toggle        # toggle | hold
+    twist_axis: z               # controller local axis for wrist_rotate
+    twist_sign: 1.0
+    waist_offset: 0.0
+    planning_frame: px150_no_elbow/base_link
+    pose_fallback_frame: base_link
+    joint_stale_s: 0.5
+    workspace_min: [0.05, -0.35, 0.00]
+    workspace_max: [0.42, 0.35, 0.45]
+    gripper_open: 1.65
+    gripper_closed: -0.95
+    speed_waist: 1.2
+    speed_shoulder: 0.8
+    speed_wrist_angle: 1.0
+    speed_wrist_rotate: 1.5
+    squeeze_threshold: 0.50
+    trigger_threshold: 0.55
+    right_pose_topic: /grab_it/quest/right_pose
+    joy_topic: /grab_it/quest/joy
+    ee_target_topic: /grab_it/quest/ee_target
+    status_topic: /grab_it/quest/status
+    il_status_topic: /grab_it/il_status
+    joint_states_topic: /px150_no_elbow/joint_states
+    joint_group_topic: /px150_no_elbow/commands/joint_group
+    joint_single_topic: /px150_no_elbow/commands/joint_single
+    joint_targets_topic: /px150_no_elbow/commands/joint_targets

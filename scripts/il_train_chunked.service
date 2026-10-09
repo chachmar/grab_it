@@ -1,0 +1,21 @@
+[Unit]
+Description=Grab-it ACT chunked train (auto-resume after reboot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/dev-ws
+Environment=HOME=/home/ubuntu
+Environment=ISAAC_ROS_WS=/home/ubuntu/dev-ws
+Environment=GRAB_IT_IL_BATCH=4
+Environment=GRAB_IT_IL_CHUNK=2500
+Environment=GRAB_IT_IL_STEPS=20000
+ExecStart=/bin/bash /home/ubuntu/dev-ws/scripts/il_train_chunked.sh
+Restart=on-failure
+RestartSec=60
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,307 @@
+# Click-to-grasp defaults for px150_no_elbow + D435i.
+# Camera TF: prefer URDF d435i_* frames (move with the pan/tilt joint).
+# Nav still uses static base_link→camera_link in camera_tf.env at pan≈0 for
+# mapping; grasp can tilt the camera down and still click-to-grasp.
+
+grasp:
+  # Image / depth topics (Nano → AGX via DDS)
+  depth_topic: /d435i/d435i/aligned_depth_to_color/image_raw
+  camera_info_topic: /d435i/d435i/color/camera_info
+  # Calibrated nav optical frame (includes mount pitch from camera_tf.env).
+  # Table-plane resolver also tries d435i_* and picks the nearest plausible hit.
+  camera_frame: camera_color_optical_frame
+
+  # MoveIt / arm frames
+  planning_frame: px150_no_elbow/base_link
+  ee_link: px150_no_elbow/ee_gripper_link
+  planning_group: interbotix_arm
+  arm_joints: [waist, shoulder, wrist_angle, wrist_rotate]
+  follow_joint_trajectory_action: /px150_no_elbow/arm_controller/follow_joint_trajectory
+  compute_ik_service: /compute_ik
+
+  # Pan lock (rad). 0 ≈ center; must match camera_tf.env calibration pose.
+  pan_lock_rad: 0.0
+
+  # Approach geometry (meters, in planning frame)
+  # Pre-grasp backs off along the table heading (not a high hover then drop).
+  approach_offset_z: 0.02
+  grasp_offset_z: 0.00
+  retreat_offset_z: 0.08
+  grasp_standoff_m: 0.05          # pre-grasp, back along heading (m)
+  # +X of ee_gripper_link to the palm/bar center. Positive pulls the EE
+  # back so the bar sits on the click (teach-cal bar_offset_x is 0.045).
+  # 0 left the jaws ~5 cm past the pole at the 5 cm pre-grasp.
+  gripper_bar_offset_x: 0.045
+  # Orientation hint only (4-DOF uses position_only_ik). Prefer current EE via TF.
+  grasp_rpy: [0.0, 0.0, 0.0]
+  use_current_ee_orientation: true
+  avoid_collisions: false
+
+  # Soft gate for inverted IK (post-filter). Keep interactive: ik_budget_s.
+  # Near bar-contact grasps need wrist_angle up toward 0 (was -0.15 veto).
+  wrist_angle_min: -2.0
+  wrist_angle_max: 0.05
+  wrist_rotate_max_abs: 1.57
+  lock_wrist_rotate: true
+  # Reject shoulder that folds the upper arm back into the AGX / pan servo.
+  # More negative = lift/back. -0.80 still allowed whippy high/low reaches.
+  shoulder_min_grasp: -0.55
+  # During a grasp, shoulder may not go more than this many rad more
+  # negative than the live joint (blocks swing toward the stack).
+  shoulder_back_slack_rad: 0.10
+  # Never fall back to an IK solution that failed the shoulder/wrist gate.
+  forbid_raw_inverted_ik: true
+  # Pinch the short table-plane axis from one D435i depth patch.
+  # Upright/round → wrist_rotate=0. No JPEG wrap (image-vertical is the wrong frame).
+  # No depth snapshot → wrist_rotate stays 0 (wrong wrap is worse than none).
+  align_wrist_to_object: true
+  wrist_align_mode: pinch_short  # jaw opening along the long axis
+  wrist_align_sign: -1.0         # one remaining handedness; flip if lying-stick pair is swapped
+  wrist_align_min_aspect: 2.00   # below this = compact/round, no yaw
+  wrist_align_gain: 0.85
+  wrist_align_max_step: 0.18
+  wrist_align_refine_jaws: false # do not chase jaw-blob angle during range
+  wrist_jaw_snap: true           # one ±90° snap if jaw silhouette is wider than tall
+  click_depth_snapshot: true     # one aligned-depth frame per click (not a stream)
+  floor_object_max_z: 0.14       # planning Z below this → floor object (don't scoop wrist up)
+  floor_tcp_lift: 0.02           # TCP above measured object top for floor grasps
+  floor_z_min: -0.08              # planning frame zero is above the floor; jaws meet a block near -0.06
+  floor_sure_z: 0.08             # top below this stays a floor object in a tilted view
+  floor_min_ee_reach: 0.18       # do not pull a floor pre-grasp closer than this
+  d435_jpeg_url: http://127.0.0.1:8081/d435i.jpg
+  ik_prefer_current: true
+  ik_budget_s: 6.0
+  # Rotate waist first so the gripper opening faces the D435i click XY.
+  # D435i sits on the pan mount, so this does not move the crosshair.
+  align_waist: true
+  waist_align_min_rad: 0.06
+  waist_align_offset_rad: 0.0
+  waist_align_gain: 1.0
+  waist_align_sign: 1.0
+  # 0 = face the click. A negative bias aimed the waist left of the pole.
+  waist_click_u_bias: 0.0
+  # 0 = do not stretch near clicks out to a fake reach (was 0.16).
+  min_grasp_reach: 0.0
+  # 0 = trust calibrated depth at click (no radial pull-in before IK).
+  reliable_grasp_reach: 0.0
+  waist_min: -2.0246
+  waist_max: 2.0944
+
+  # Depth sampling (white/textureless objects often return far flying pixels —
+  # table-plane projection is primary; depth only refines height).
+  # Continuous depth subscribe saturates the Nano↔AGX crossover and delays GUI video.
+  subscribe_depth: false
+  depth_window: 7
+  min_depth_m: 0.12
+  max_depth_m: 1.20
+  depth_near_percentile: 20        # prefer nearer depths in the window
+
+  # Tabletop projection. Click ray hits object-height plane (not the floor) so
+  # XY is at the object, not past it, and Z is not under the click.
+  use_table_plane: true
+  table_z: 0.04                    # table surface in planning frame (m)
+  object_height: 0.07              # click-plane = table_z + this
+  grasp_z_bias: 0.02               # extra TCP lift after plane hit
+  # 0 = trust depth / object_height for Z (was 0.30 for legacy table-plane only).
+  grasp_tcp_z: 0.0
+  # Mount X/Z now live in URDF (nano_case_to_pan_servo). Keep Y only if
+  # harness still shows a lateral residual; otherwise zeros.
+  # From grasp_cal_clean: mean (est-truth) ≈ (0, -0.030, -0.012).
+  # Keep Y translation; Z offset made the wide/gripper target sit slightly
+  # high — leave Z at 0 and nudge down only if still high after a pick test.
+  click_origin_offset: [0.0, 0.030, 0.0]
+  # Positive = treat click as lower in the image (nearer / "below" the object).
+  click_v_bias: 0.0
+  # 1.0 = trust URDF pan+pitch (cam_pitch calibrated). <1 faked the old pitch error.
+  click_pan_scale: 1.0
+  click_pan_z_ref: 0.85
+
+  # Workspace AABB in planning frame (reject clicks outside)
+  # Lateral cal point was Y=-0.10 at z=0.30; allow left/right grasps.
+  workspace_min: [0.05, -0.35, -0.08]
+  workspace_max: [0.42,  0.35, 0.38]
+  max_horizontal_reach: 0.42
+
+  # Motion timing
+  segment_duration_s: 2.5
+  ik_timeout_s: 3.0
+  # Normalized effort [-1, 1]; grasp_from_click scales by gripper_pwm_scale for XL430 PWM.
+  gripper_open: 1.0
+  gripper_close: -0.35
+  gripper_pwm_scale: 650.0
+  gripper_settle_s: 1.2
+  gripper_close_s: 4.0           # stall-close window (settle was too short to pinch)
+  # XL430 Current_Limit (units of 2.69 mA). 280 starved the motor (jaws
+  # stuck open, oval still green). Restore ~900 so it can close; overheat
+  # is avoided by holding the stall pose instead of a fully-closed goal.
+  gripper_current_limit: 900
+  gripper_hold_extra_rad: 0.12   # extra close from stall pose, then hold there
+  # Pinch/search share this max step per 50ms tick (~1.1 rad/s). Avoids the
+  # old "slow pulse then slam closed" XL430 profile jump.
+  gripper_close_step_rad: 0.055
+  gripper_profile_velocity: 40
+  gripper_profile_acceleration: 15
+  # XL430 Present_Load (0–1023). Pinch resistance confirms a grab and can
+  # detect an object during the slow squeeze even if the wide cam misses it.
+  gripper_load_contact: 160
+  gripper_load_grab: 220
+  gripper_empty_closed_rad: 0.12  # at/inside this of fully-closed = empty hard-stop
+  # Image occupancy is not a grasp. Load confirms a hard pinch. A foam pole
+  # can stall the jaws short of the empty stop with load under the grab
+  # threshold; that stall is also a grasp (logged with joint and load).
+  grasp_require_load: true
+  grasp_empty_retries: 0
+  # One forward step after an empty close. Not a shoulder fold.
+  grasp_retry_forward_m: 0.01
+  # After a pinch, lift this far, recheck load and jaw position, then
+  # finish retreat_offset_z only if the object is still held.
+  grasp_lift_check_z: 0.025
+  # Unused by the click-grasp run. Kept so older callers still load.
+  grasp_retry_shoulder_rad: 0.20
+  grasp_retry_wrist_rad: 0.22
+  grasp_retry_wrist_floor_rad: -0.22
+  # false: Grasp at point closes with the scripted pinch (load or foam stall).
+  # true: hand the reached pose to ACT. GRAB_IT_ACT_CLOSES overrides this.
+  act_closes: false
+  # No farther push — pitch/mount live in the URDF now.
+  grasp_farther_m: 0.0
+  grasp_deeper_m: 0.00
+  # Wireframe cube after click: true cube, edge ≈ PX150 inner jaw opening.
+  # left_finger ≈ 0.0375 m at open; pinch volume is smaller than full-open.
+  show_landing_cube: true
+  # Blue overlay on D435i: depth pixels on elevated objects inside arm reach
+  # (not the tabletop / entire workspace). Needs RELIABLE depth over the bridge.
+  d435i_reach_overlay: true
+  d435i_reach_grid_u: 32
+  d435i_reach_grid_v: 24
+  d435i_reach_period_s: 1.5
+  d435i_reach_min_above_table: 0.025   # ignore tabletop; keep cup/object tops
+  d435i_reach_max_above_table: 0.28
+  landing_cube_m: 0.040         # full edge (m); half = 0.020
+  landing_box_depth_m: 0.020    # along approach (half-extent)
+  landing_box_width_m: 0.020    # jaw span (half-extent)
+  landing_box_height_m: 0.020   # vertical (half-extent)
+  gripper_cube_offset_x: 0.030  # jaw-opening cube, +X of ee_gripper_link
+  # Residual optical-frame offset on top of URDF wide_cam TF.
+  # Look-direction is chosen live (URDF pitch -90 looks up until RSP reloads).
+  # GUI "Calibrate marker" solves fx + this residual from the black band in
+  # both images (D435i depth 3D ↔ wide UV). Do not use constant UV bias for height.
+  wide_extrinsic_xyz: [0.0, 0.0, 0.0]
+  wide_extrinsic_rpy: [0.0, 0.0, 0.0]
+  wide_u_bias: 0.0
+  wide_v_bias: 0.0
+  # Detect the black band for overlay + marker calibration (not a live tracker).
+  wide_ring_enable: true
+  wide_jpeg_url: http://127.0.0.1:8081/wide.jpg
+
+  # Wide USB cam: live MJPEG + green object-cube overlay as a sanity check.
+  # Never used for pose, IBVS, or cube matching. Handoff Grab uses jaw occupancy.
+  use_wide_servo: false
+  wide_topic: /wide_cam/image_raw/compressed
+  wide_camera_info_topic: /wide_cam/camera_info
+  wide_frame: wide_cam
+  wide_overlay: true
+  # Cube-to-jaw image servo is off. Grasp is 4-DOF IK to the click cube.
+  wide_cube_servo: false
+  d435i_cube_servo: false
+  d435i_cube_servo_gain_uv: 0.55
+  wide_cube_servo_iters: 20
+  wide_cube_servo_tol: 0.05
+  wide_cube_servo_timeout_s: 12.0
+  wide_cube_servo_gain_uv: 0.08
+  wide_cube_servo_gain_roll: 0.80
+  wide_cube_servo_gain_pitch: 0.60
+  wide_cube_servo_gain_range: 0.04
+  wide_cube_servo_max_wr: 0.18
+  wide_cube_servo_max_wa: 0.12
+  wide_cube_servo_wr_sign: -1.0
+  wide_cube_servo_wa_sign: 1.0
+  # 640x480 JPEG is a crop of the 150° M12; marker cal refines this.
+  wide_hfov_rad: 1.1767
+  # Pixel where an object sits when it is between the fingers (norm 0..1).
+  wide_grasp_u: 0.50
+  wide_grasp_v: 0.78
+  wide_servo_tol: 0.06
+  wide_servo_gain_u: 0.10       # meters of EE motion per unit-frame u error
+  wide_servo_gain_v: 0.12
+  wide_servo_z_est: 0.14        # pixel→meter scale only; not measured depth
+  wide_servo_max_step: 0.025
+  wide_servo_max_iters: 6
+  wide_servo_nudge_s: 0.65
+  # Hold waist facing the click. Wrist wrap comes from object long-axis
+  # (align_wrist_to_object), not image-u chase — that rolled the opening
+  # off the point. Set these true only to debug lateral servo.
+  wide_servo_wrist: false
+  wide_servo_gain_wr: 0.90       # rad of wrist_rotate per unit-frame u error
+  wide_servo_max_wr: 0.22        # max wrist step per iteration (rad)
+  wide_servo_wr_sign: -1.0
+  wide_servo_wrist_u_scale: 0.35 # leftover XY u-correction when wrist is used
+  wide_range_waist: false
+  wide_range_gain_waist: 0.50     # rad of waist per unit-frame u error
+  wide_range_max_waist: 0.07      # max waist step per 2 cm walk (rad)
+  wide_range_waist_sign: -1.0     # flip to 1.0 if waist yaws the wrong way
+  wide_range_lat_gain: 0.045      # extra table-plane sidestep (m per unit u)
+  wide_range_lat_max: 0.012
+  wide_servo_range_step: 0.02   # true table-plane step after 2D center (m)
+  wide_servo_range_max: 0.12    # walk this far; pinch waits for cube align
+  # Jaw-cam occupancy is not a pinch trigger. Cubes in the wide view are.
+  wide_close_on_blob: false
+  wide_blob_min_range: 0.12
+  wide_blob_in_jaws_frames: 2
+  wide_blob_finger_thr: 55       # ignore darker-than-this gripper jaws
+  wide_blob_delta: 10            # gray delta vs table median in the opening
+  wide_blob_min_area: 50
+  wide_blob_frac: 0.08           # backup: occupied fraction of the opening
+  wide_detect_y0_frac: 0.32     # ignore robot self-occlusion at top of frame
+  wide_detect_x0_frac: 0.12
+  wide_detect_x1_frac: 0.88
+  wide_detect_thr: 18
+  wide_detect_min_area: 400
+  wide_stall_ratio: 0.38
+  wide_min_motion: 2.5
+  wide_stall_frames: 2
+  wide_roi_y0_frac: 0.45
+  wide_roi_y1_frac: 0.95
+  wide_roi_x0_frac: 0.20
+  wide_roi_x1_frac: 0.80
+  wide_stale_s: 1.2
+  # Wait briefly for a jaw-blob if range finished without one, then close.
+  wide_object_enter_min: 8.0
+  wide_object_enter_frames: 2
+  wide_object_wait_s: 2.5
+
+  # Handoff grab/release (GUI buttons). Home then pulse jaws until the
+  # wide cam sees an object at the jaw pixel; stall-close; tuck to sleep.
+  home_joints: [0.0, 0.1745, -1.309, 0.0]
+  sleep_joints: [0.0, -0.2321, -1.7279, 0.0]
+  handoff_wait_s: 45.0
+  handoff_pulse_s: 1.4
+  handoff_hold_open_s: 0.8
+  handoff_search_close_frac: 0.55   # 0=stay open, 1=full close during search
+  handoff_center_tol: 0.22
+  handoff_center_frames: 3
+  # Jaw opening in the wide image (normalized). Appearance vs empty baseline
+  # is the handoff detector — not D435i depth and not force/torque.
+  handoff_jaw_u0: 0.36
+  handoff_jaw_u1: 0.64
+  handoff_jaw_v0: 0.55
+  handoff_jaw_v1: 0.95
+  handoff_appear_min: 10.0
+
+# Teach-tip calibration (scripts/calibration/teach_cal_node.py).
+# Free arm → touch tip → Hold → Save → Sleep→taught → pan sweep × N.
+teach_cal:
+  bar_offset_x: 0.045          # EE +X to contact (bar); truth tip
+  pan_start_rad: 0.0
+  pan_end_rad: 0.70            # look-down end of sweep
+  settle_s: 1.5
+  n_default: 8
+  pose_path: /workspaces/isaac_ros-dev/config/calibration/taught_contact.yaml
+  out_jsonl: /workspaces/isaac_ros-dev/config/calibration/teach_cal.jsonl
+  truth_use_taught: true       # never use live TF for truth (servos sag under load)
+  fresh_jsonl_each_sweep: true # rotate old log to .bak; no mixed sessions
+  regoto_taught_each_sample: false # only pan moves during sweep; arm stays at taught
+  tip_sag_warn_m: 0.015        # log warning if live tip drifts >1.5 cm from taught
+  tip_height_warn_m: 0.05      # warn if taught tip is >5 cm above contact plane
+  optical_cal_path: /workspaces/isaac_ros-dev/config/calibration/d435i_optical_cal.yaml
+  optical_cal_trial_path: /workspaces/isaac_ros-dev/config/calibration/d435i_optical_cal_trial.yaml

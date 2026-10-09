@@ -1,0 +1,14 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# grab_it mapping + Nav2 stack — baked in so it survives run_dev.sh rebuilds
+RUN apt-get update --allow-releaseinfo-change && apt-get install -y \
+    ros-humble-rtabmap-ros \
+    ros-humble-domain-bridge \
+    ros-humble-diagnostic-updater \
+    ros-humble-teleop-twist-keyboard \
+    ros-humble-navigation2 \
+    ros-humble-nav2-bringup \
+    ros-humble-depthimage-to-laserscan \
+    ros-humble-irobot-create-msgs \
+    && rm -rf /var/lib/apt/lists/*
