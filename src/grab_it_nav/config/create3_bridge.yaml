@@ -1,0 +1,16 @@
+name: create3_bridge
+topics:
+  # /odom stamps stay fresh; Create3 /tf often lags wall-clock by seconds and
+  # makes RViz/Nav2 look delayed. TF is republished from /odom (odom_to_tf.py).
+  odom:
+    type: nav_msgs/msg/Odometry
+    from_domain: 5
+    to_domain: 0
+  tf_static:
+    type: tf2_msgs/msg/TFMessage
+    from_domain: 5
+    to_domain: 0
+  cmd_vel:
+    type: geometry_msgs/msg/Twist
+    from_domain: 0
+    to_domain: 5
