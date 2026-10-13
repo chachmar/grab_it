@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>grab_it</name>
+  <version>0.0.1</version>
+  <description>Mobile manipulator description (Create 3, lift, PX150, RealSense D435i) and pick-place node.</description>
+  <maintainer email="chachmar@gmail.com">chachmar</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>dynamic_reconfigure</build_depend>
+  <exec_depend>dynamic_reconfigure</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>rviz</exec_depend>
+</package>
