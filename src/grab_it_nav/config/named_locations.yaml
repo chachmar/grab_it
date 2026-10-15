@@ -1,0 +1,32 @@
+# Named poses in the map frame (from tf2_echo map -> base_link).
+# yaw is radians (RPY yaw from tf2_echo).
+#
+# Add more:
+#   bash scripts/save_named_location.sh living_room
+# Go to one (nav stack already up):
+#   bash scripts/go_to_named.sh kitchen
+locations:
+  kitchen:
+    frame_id: map
+    x: -2.508
+    y: 5.399
+    z: 0.0
+    yaw: -2.954
+  living_room:
+    frame_id: map
+    x: -1.3745493826556416
+    y: -0.22078333948688567
+    z: 0.0
+    yaw: -0.49461424304355156
+  trash:
+    frame_id: map
+    x: -4.1577640985362665
+    y: 5.5058025126639745
+    z: 0.0
+    yaw: 1.5178386397495454
+  dock_area:
+    frame_id: map
+    x: -0.04683941034407235
+    y: 0.17084876422787465
+    z: 0.0
+    yaw: -0.06541994260468857
