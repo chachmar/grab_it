@@ -1,0 +1,21 @@
+# Temporary aim offset ≈2.5cm in +Y to exercise vision servo under a
+# relocated-pole prior (logged as note=nudged). Approach is still vision-led.
+frame: analytic_eef
+play_on_real: true
+source: pole_click_nudged
+
+x: 0.2840
+y: 0.0859
+z: 0.2273
+gripper: -0.9500
+wrist_rotate: 0.8744
+wrist_angle_max: -1.4834
+
+joints_real:
+  waist: 0.2655
+  shoulder: 0.6700
+  wrist_angle: -1.4834
+  wrist_rotate: 0.8744
+  gripper: -0.9500
+
+xy_jitter: 0.0300

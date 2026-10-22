@@ -1,0 +1,22 @@
+# GrabIt-Goal from live pole click (projected reachable under wrist_max).
+# wrist_rotate field = shaft yaw for pool; joints_real.wrist_rotate = joint.
+
+frame: analytic_eef
+play_on_real: true
+source: pole_click
+
+x: 0.3182
+y: 0.0426
+z: 0.2273
+gripper: -0.9500
+wrist_rotate: 1.8807
+wrist_angle_max: -1.4834
+
+joints_real:
+  waist: 0.1637
+  shoulder: 0.6900
+  wrist_angle: -1.4834
+  wrist_rotate: 0.0000
+  gripper: -0.9500
+
+xy_jitter: 0.0300
