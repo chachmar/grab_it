@@ -147,8 +147,9 @@ grasp:
   # can stall the jaws short of the empty stop with load under the grab
   # threshold; that stall is also a grasp (logged with joint and load).
   grasp_require_load: true
-  grasp_empty_retries: 0
-  # One forward step after an empty close. Not a shoulder fold.
+  # After an empty close: reopen, nudge forward, pinch again (up to this many).
+  grasp_empty_retries: 2
+  # Forward nudge after an empty close. Not a shoulder fold.
   grasp_retry_forward_m: 0.01
   # After a pinch, lift this far, recheck load and jaw position, then
   # finish retreat_offset_z only if the object is still held.
@@ -210,15 +211,27 @@ grasp:
   nexarm_obstacle_z_min_m: 0.12
   nexarm_obstacle_z_max_m: 0.80
   nexarm_obstacle_imu_topic: /d435i/d435i/imu
-  # Stop-pose approach (fingertip gap + transit gate).
-  nexarm_fingertip_m: 0.046
-  nexarm_stop_gap_m: 0.03
-  nexarm_pre_back_m: 0.15
-  nexarm_gate_trip_m: 0.20
-  nexarm_gate_min_pix: 150
-  nexarm_gate_hole_jump: 0.25
-  nexarm_corridor_margin_m: 0.015
-  # Open-loop grasp: depth+FK unprojection → stop plan → transit gate → hold.
+  # Approach-only: pull the TCP back from the click by this distance.
+  nexarm_collision_m: 0.14
+  # Parallel depth hold (off for now — pull-back only).
+  nexarm_depth_watch: false
+  # After the pull-back hold: tilt D435i, align roll, creep on color fill, pinch.
+  nexarm_visual_pinch: true
+  # Match current look-down pan (~1.41 rad); UV ROI is image-fixed so this
+  # view puts the opening in the top-right half of the frame.
+  nexarm_pan_look_rad: 1.41
+  nexarm_mouth_fill_u0: 0.50
+  nexarm_mouth_fill_u1: 1.00
+  nexarm_mouth_fill_v0: 0.00
+  nexarm_mouth_fill_v1: 0.50
+  nexarm_mouth_fill_frac: 0.20
+  nexarm_mouth_fill_delta: 18.0
+  nexarm_visual_creep_step_m: 0.01
+  nexarm_visual_creep_max_m: 0.12
+  nexarm_visual_roll: false
+  nexarm_visual_roll_tol_rad: 0.08
+  nexarm_visual_roll_max_steps: 8
+  # Open-loop grasp: depth+FK click → pull-back IK (optional depth hold).
   # Mouth / jaw-edge / seat / in-gripper creep are unused on this path.
   nexarm_approach_only: true
   nexarm_pinch_after_approach: false
