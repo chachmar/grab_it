@@ -2,6 +2,7 @@
 """Click-to-grasp: D435i depth pixel → TF → MoveIt IK → approach/close/retreat."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 import os
@@ -11,6 +12,13 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+# One BLAS thread. A worker thread entering OpenBLAS while the executor is
+# also in NumPy deadlocks on the BLAS thread pool (floor measure hung there).
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import numpy as np
 import rclpy
@@ -25,7 +33,7 @@ from moveit_msgs.msg import PositionIKRequest, RobotState
 from moveit_msgs.srv import GetPositionIK
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
     HistoryPolicy,
@@ -33,7 +41,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
     qos_profile_sensor_data,
 )
-from sensor_msgs.msg import CameraInfo, CompressedImage, Image, JointState
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image, Imu, JointState
 
 try:
     import cv2
@@ -153,6 +161,49 @@ def _load_cfg(path: Path) -> dict:
     return {}
 
 
+def _calibration_script(name: str) -> Optional[object]:
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[3] / "scripts" / "calibration" / name,
+        Path("/workspaces/isaac_ros-dev/scripts/calibration") / name,
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        if spec is None or spec.loader is None:
+            continue
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    return None
+
+
+def _floor_mod():
+    mod = _calibration_script("floor_resolve.py")
+    if mod is None:
+        raise ImportError("scripts/calibration/floor_resolve.py is missing")
+    return mod
+
+
+def _load_floor_reach() -> dict:
+    candidates = [
+        Path("/workspaces/isaac_ros-dev/config/floor_reach.yaml"),
+        Path(__file__).resolve().parents[3] / "config" / "floor_reach.yaml",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            if data.get("heights"):
+                return data
+        except Exception:
+            continue
+    return {}
+
+
 class GraspFromClick(Node):
     def __init__(self):
         super().__init__("grasp_from_click")
@@ -256,6 +307,217 @@ class GraspFromClick(Node):
         self.ws_min = list(cfg.get("workspace_min", [0.05, -0.35, 0.00]))
         self.ws_max = list(cfg.get("workspace_max", [0.42, 0.35, 0.38]))
         self.max_reach = float(cfg.get("max_horizontal_reach", 0.42))
+        if os.environ.get("GRAB_IT_ARM", "").strip().lower() == "nexarm":
+            # 5-DOF chain is longer than the PX150 boom-removed arm.
+            # A saved PX150 yaml still says 0.42; don't let that cap the NexArm.
+            self.max_reach = max(self.max_reach, 0.46)
+            if len(self.ws_max) >= 1 and float(self.ws_max[0]) <= 0.42:
+                self.ws_max[0] = 0.46
+            # PX150 lateral cal offset must not shift NexArm click rays.
+            self.click_origin_offset = np.zeros(3, dtype=np.float64)
+        self.nexarm_tcp_m = float(cfg.get("nexarm_tcp_m", 0.05))
+        # Soft stop: measured fold extreme; more negative jams cam into forearm.
+        self.nexarm_wrist_flex_min = float(cfg.get("nexarm_wrist_flex_min", -1.35))
+        self.nexarm_wrist_flex_max = float(cfg.get("nexarm_wrist_flex_max", 2.09))
+        self.nexarm_pitches_deg = [
+            float(v)
+            for v in cfg.get(
+                "nexarm_pitches_deg",
+                [-90.0, -75.0, -60.0, -45.0, -30.0, -15.0, 0.0],
+            )
+        ]
+        self.nexarm_standoffs_m = [
+            float(v)
+            for v in cfg.get(
+                "nexarm_standoffs_m", [0.28, 0.24, 0.22, 0.20, 0.18]
+            )
+        ]
+        self.nexarm_servo_step_m = float(cfg.get("nexarm_servo_step_m", 0.02))
+        self.nexarm_servo_min_depth_m = float(
+            cfg.get("nexarm_servo_min_depth_m", 0.16)
+        )
+        self.nexarm_blind_m = float(cfg.get("nexarm_blind_m", 0.10))
+        self.nexarm_force_blind_m = float(cfg.get("nexarm_force_blind_m", 0.15))
+        self.nexarm_servo_max_iters = int(cfg.get("nexarm_servo_max_iters", 24))
+        self.nexarm_servo_timeout_s = float(cfg.get("nexarm_servo_timeout_s", 90.0))
+        self.nexarm_uv_margin = float(cfg.get("nexarm_uv_margin", 0.25))
+        self.nexarm_color_match_thr = float(cfg.get("nexarm_color_match_thr", 0.45))
+        self.nexarm_color_search_win = float(cfg.get("nexarm_color_search_win", 0.32))
+        self.nexarm_xy_gain = float(cfg.get("nexarm_xy_gain", 0.60))
+        self.nexarm_z_gain = float(cfg.get("nexarm_z_gain", 0.20))
+        self.nexarm_z_clamp_m = float(cfg.get("nexarm_z_clamp_m", 0.035))
+        self.nexarm_freeze_depth_m = float(cfg.get("nexarm_freeze_depth_m", 0.18))
+        self.nexarm_blind_overshoot_m = float(
+            cfg.get("nexarm_blind_overshoot_m", 0.015)
+        )
+        self.nexarm_color_updates_pose = bool(
+            cfg.get("nexarm_color_updates_pose", False)
+        )
+        # Tip slab: stop only while advancing, when depth lands this far
+        # ahead of the TCP. Jaws (s≈0) are outside the slab.
+        self.nexarm_obstacle_stop = bool(cfg.get("nexarm_obstacle_stop", True))
+        self.nexarm_obstacle_use_imu = bool(cfg.get("nexarm_obstacle_use_imu", True))
+        self.nexarm_obstacle_gap_m = float(cfg.get("nexarm_obstacle_gap_m", 0.02))
+        self.nexarm_obstacle_thick_m = float(
+            cfg.get("nexarm_obstacle_thick_m", 0.04)
+        )
+        self.nexarm_obstacle_radius_m = float(
+            cfg.get("nexarm_obstacle_radius_m", 0.04)
+        )
+        self.nexarm_obstacle_min_pix = int(cfg.get("nexarm_obstacle_min_pix", 40))
+        self.nexarm_obstacle_roi_half_px = int(
+            cfg.get("nexarm_obstacle_roi_half_px", 36)
+        )
+        self.nexarm_obstacle_z_min_m = float(
+            cfg.get("nexarm_obstacle_z_min_m", 0.12)
+        )
+        self.nexarm_obstacle_z_max_m = float(
+            cfg.get("nexarm_obstacle_z_max_m", 0.80)
+        )
+        self.nexarm_obstacle_imu_topic = str(
+            cfg.get("nexarm_obstacle_imu_topic", "/d435i/d435i/imu")
+        )
+        # Stop-pose approach: fingertip gap, pre-back, transit depth gate.
+        self.nexarm_fingertip_m = float(cfg.get("nexarm_fingertip_m", 0.046))
+        self.nexarm_stop_gap_m = float(cfg.get("nexarm_stop_gap_m", 0.03))
+        self.nexarm_pre_back_m = float(cfg.get("nexarm_pre_back_m", 0.15))
+        self.nexarm_gate_trip_m = float(cfg.get("nexarm_gate_trip_m", 0.20))
+        self.nexarm_gate_min_pix = int(cfg.get("nexarm_gate_min_pix", 150))
+        self.nexarm_gate_hole_jump = float(cfg.get("nexarm_gate_hole_jump", 0.25))
+        self.nexarm_corridor_margin_m = float(
+            cfg.get("nexarm_corridor_margin_m", 0.015)
+        )
+        # Stop on the approach axis in front of the click (open-jaw path).
+        self.nexarm_approach_only = bool(cfg.get("nexarm_approach_only", False))
+        # After a successful in-jaws open hold, run the scripted stall pinch.
+        self.nexarm_pinch_after_approach = bool(
+            cfg.get("nexarm_pinch_after_approach", False)
+        )
+        # Lateral tip shift just before pinch so the mouth (not the D435i
+        # optical axis) lands on the click.
+        self.nexarm_pinch_jaw_bias_m = float(
+            cfg.get("nexarm_pinch_jaw_bias_m", 0.015)
+        )
+        self.nexarm_front_standoff_m = float(
+            cfg.get("nexarm_front_standoff_m", 0.16)
+        )
+        self.nexarm_align_look_s_m = float(
+            cfg.get("nexarm_align_look_s_m", 0.24)
+        )
+        self.nexarm_jaw_gap_m = float(cfg.get("nexarm_jaw_gap_m", 0.050))
+        self.nexarm_depth_jaw_align = bool(
+            cfg.get("nexarm_depth_jaw_align", True)
+        )
+        # During the final insert, stop as soon as fresh D435i depth says the
+        # target is at the open jaw mouth. This is authoritative over the
+        # precomputed object-center estimate, which can be behind a movable object.
+        self.nexarm_final_depth_stop_m = float(
+            cfg.get("nexarm_final_depth_stop_m", 0.14)
+        )
+        self.nexarm_final_step_m = float(cfg.get("nexarm_final_step_m", 0.010))
+        # D435i is offset from the jaw centerline; UV targets are biased so
+        # the mouth (not the optical axis) lands on the click. u>0.5 shifts
+        # tip left when jaws sit right of the target with a centered crosshair.
+        self.nexarm_front_uv_u = float(cfg.get("nexarm_front_uv_u", 0.58))
+        self.nexarm_front_uv_v = float(cfg.get("nexarm_front_uv_v", 0.45))
+        self.nexarm_front_jaw_bias_m = float(
+            cfg.get("nexarm_front_jaw_bias_m", 0.018)
+        )
+        self.nexarm_front_center_iters = int(
+            cfg.get("nexarm_front_center_iters", 16)
+        )
+        # Tip D435i down toward the gripper during approach (pan about +Y).
+        self.nexarm_pan_approach_rad = float(
+            cfg.get("nexarm_pan_approach_rad", 0.55)
+        )
+        # Steeper tilt used only for the last few centimetres. At this angle
+        # the D435i sees one jaw face; the object enters just to the right
+        # of that jaw's inner edge.
+        self.nexarm_pan_final_rad = float(
+            cfg.get("nexarm_pan_final_rad", 1.15)
+        )
+        self.nexarm_jaw_edge_stop = bool(
+            cfg.get("nexarm_jaw_edge_stop", True)
+        )
+        self.nexarm_jaw_edge_u0 = float(cfg.get("nexarm_jaw_edge_u0", 0.56))
+        self.nexarm_jaw_edge_u1 = float(cfg.get("nexarm_jaw_edge_u1", 0.70))
+        self.nexarm_jaw_edge_v0 = float(cfg.get("nexarm_jaw_edge_v0", 0.08))
+        self.nexarm_jaw_edge_v1 = float(cfg.get("nexarm_jaw_edge_v1", 0.42))
+        self.nexarm_jaw_edge_z_min = float(
+            cfg.get("nexarm_jaw_edge_z_min", 0.045)
+        )
+        self.nexarm_jaw_edge_z_max = float(
+            cfg.get("nexarm_jaw_edge_z_max", 0.13)
+        )
+        self.nexarm_jaw_edge_min_pix = int(
+            cfg.get("nexarm_jaw_edge_min_pix", 40)
+        )
+        self.nexarm_jaw_edge_uv_u = float(
+            cfg.get("nexarm_jaw_edge_uv_u", 0.63)
+        )
+        self.nexarm_jaw_edge_uv_v = float(
+            cfg.get("nexarm_jaw_edge_uv_v", 0.24)
+        )
+        # Stop advancing once the lower FOV (mouth) sees a near object.
+        self.nexarm_mouth_stop = bool(cfg.get("nexarm_mouth_stop", True))
+        self.nexarm_mouth_u0 = float(cfg.get("nexarm_mouth_u0", 0.28))
+        self.nexarm_mouth_u1 = float(cfg.get("nexarm_mouth_u1", 0.72))
+        self.nexarm_mouth_v0 = float(cfg.get("nexarm_mouth_v0", 0.58))
+        self.nexarm_mouth_v1 = float(cfg.get("nexarm_mouth_v1", 0.95))
+        self.nexarm_mouth_z_min = float(cfg.get("nexarm_mouth_z_min", 0.04))
+        # Legacy absolute band kept for soft track confirm; primary mouth hit
+        # uses relative elevation vs the corridor background (see sample).
+        self.nexarm_mouth_z_max = float(cfg.get("nexarm_mouth_z_max", 0.22))
+        self.nexarm_mouth_z_abs_max = float(
+            cfg.get("nexarm_mouth_z_abs_max", 0.35)
+        )
+        self.nexarm_mouth_elev_m = float(cfg.get("nexarm_mouth_elev_m", 0.025))
+        self.nexarm_mouth_min_pix = int(cfg.get("nexarm_mouth_min_pix", 25))
+        # Fraction of finite mouth pixels that must be elevated object — fringe
+        # elev (frac≈0.01) is "ahead of pads," not in the gripper opening.
+        self.nexarm_mouth_min_frac = float(cfg.get("nexarm_mouth_min_frac", 0.08))
+        # Optical Z in the opening corridor must be this close (jaw volume).
+        self.nexarm_mouth_near_z_max = float(
+            cfg.get("nexarm_mouth_near_z_max", 0.18)
+        )
+        self.nexarm_pinch_seat_m = float(cfg.get("nexarm_pinch_seat_m", 0.018))
+        self.nexarm_pan_blend_s0_m = float(cfg.get("nexarm_pan_blend_s0_m", 0.12))
+        self.nexarm_pan_blend_s1_m = float(cfg.get("nexarm_pan_blend_s1_m", 0.045))
+        self.nexarm_pan_mid_rad = float(
+            cfg.get(
+                "nexarm_pan_mid_rad",
+                float(cfg.get("nexarm_pan_approach_rad", 0.55))
+                + 0.45
+                * (
+                    float(cfg.get("nexarm_pan_final_rad", 1.15))
+                    - float(cfg.get("nexarm_pan_approach_rad", 0.55))
+                ),
+            )
+        )
+        self.nexarm_engulf_s_m = float(cfg.get("nexarm_engulf_s_m", 0.048))
+        self.nexarm_seat_floor_m = float(cfg.get("nexarm_seat_floor_m", 0.0))
+        self.nexarm_seat_z_drop_m = float(cfg.get("nexarm_seat_z_drop_m", 0.018))
+        self.nexarm_pinch_force_left_m = float(
+            cfg.get("nexarm_pinch_force_left_m", 0.0)
+        )
+        self.nexarm_pinch_during_seat = bool(
+            cfg.get("nexarm_pinch_during_seat", True)
+        )
+        # After UV square-up, creep until the target is between the open jaws.
+        self.nexarm_in_gripper_advance = bool(
+            cfg.get("nexarm_in_gripper_advance", True)
+        )
+        # Never push closer than this geometric floor along approach (m).
+        self.nexarm_in_gripper_floor_m = float(
+            cfg.get("nexarm_in_gripper_floor_m", 0.03)
+        )
+        # Optical depth that counts as "in the mouth" during that creep.
+        self.nexarm_in_gripper_depth_m = float(
+            cfg.get(
+                "nexarm_in_gripper_depth_m",
+                cfg.get("nexarm_final_depth_stop_m", 0.12),
+            )
+        )
         self.seg_dur = float(cfg.get("segment_duration_s", 2.5))
         self.ik_timeout = float(cfg.get("ik_timeout_s", 3.0))
         # Gripper joint (rad), same mapping as the GUI slider.
@@ -448,10 +710,11 @@ class GraspFromClick(Node):
         self.wrist_jaw_snap = bool(cfg.get("wrist_jaw_snap", True))
         self.click_depth_snapshot = bool(cfg.get("click_depth_snapshot", True))
         self.floor_object_max_z = float(cfg.get("floor_object_max_z", 0.14))
-        self.floor_tcp_lift = float(cfg.get("floor_tcp_lift", 0.02))
-        self.floor_z_min = float(cfg.get("floor_z_min", -0.08))
-        self.floor_sure_z = float(cfg.get("floor_sure_z", 0.08))
-        self.floor_min_ee_reach = float(cfg.get("floor_min_ee_reach", 0.18))
+        self.floor_object_default_height = float(
+            cfg.get("floor_object_default_height", 0.04)
+        )
+        self._floor_reach = _load_floor_reach()
+        self._floor_z_cache: Optional[float] = None
         self.d435_jpeg_url = str(
             cfg.get("d435_jpeg_url", "http://127.0.0.1:8081/d435i.jpg")
         )
@@ -508,11 +771,83 @@ class GraspFromClick(Node):
         self._depth: Optional[np.ndarray] = None
         self._depth_frame = ""
         self._info: Optional[CameraInfo] = None
+        self._nexarm = os.environ.get("GRAB_IT_ARM", "").strip().lower() == "nexarm"
+        if self._nexarm:
+            # Point-click was still solving the 4-DOF PX150 and publishing
+            # joint_group into a bus the NexArm does not read.
+            self.arm_joints = [
+                "shoulder_pan",
+                "shoulder_lift",
+                "elbow_flex",
+                "wrist_flex",
+                "wrist_roll",
+            ]
+            self.home_joints = [0.0, 0.1745, 0.0, 0.0, 0.0]
+            self.sleep_joints = [0.0, 1.40, -1.80, 0.0, 0.0]
+            # Hardware: cmd 0.025 opens, 0.0 closes (opposite the old CAD labels).
+            self.grip_joint_open = float(cfg.get("nexarm_grip_open", 0.025))
+            self.grip_joint_closed = float(cfg.get("nexarm_grip_closed", 0.0))
+            self.shoulder_min_grasp = -2.2
+            self.wrist_angle_min = -2.2
+            self.wrist_angle_max = 2.2
+            self.waist_lim = (-2.09, 2.09)
+            # Click rays are in the wrist-mounted D435i, expressed in the NexArm base.
+            self.planning_frame = "nexarm_base_link"
+            self.grip_close_step_rad = min(float(self.grip_close_step_rad), 0.004)
+            # Empty band sits just short of closed, toward open.
+            empty_band = abs(float(cfg.get("nexarm_grip_empty_band", 0.004)))
+            if self.grip_joint_closed >= self.grip_joint_open:
+                self.grip_empty_closed = -empty_band
+            else:
+                self.grip_empty_closed = empty_band
+            # nexarm_base_link sits on the top plate, above the table. A real
+            # click is often z<0 in this frame; the PX150 box started at z=0.
+            self.ws_min[2] = -0.22
+            self.table_z = -0.06
+            self._floor_z_cache = -0.20
+        self._nexarm_click_snap: Optional[dict] = None
+        self._nexarm_grasp_freeze: Optional[Tuple[float, float, float]] = None
+        self._nexarm_stop_plan: Optional[dict] = None
+        self._obstacle_watch = False
+        self._obstacle_armed = True
+        self._obstacle_q_prev: Optional[List[float]] = None
+        self._obstacle_stop_reason: Optional[str] = None
+        self._obstacle_logged = False
+        self._obstacle_api_mod = None
+        self._stop_plan_mod = None
+        self._safety_gate_mod = None
+        self._imu_accel: Optional[Tuple[float, float, float]] = None
+        self._imu_stamp = 0.0
+        self._depth_poll_lock = threading.Lock()
+        # Transit safety gate (independent of the motion loop).
+        self._gate_armed = False
+        self._gate_state = None
+        self._safety_trip: Optional[str] = None
+        self._last_cmd_q: Optional[List[float]] = None
+        self._gate_cam: Optional[dict] = None
+        self._gate_thread: Optional[threading.Thread] = None
+        self._gate_stop = False
+        self._nexarm_plan: Optional[dict] = None
+        self._nexarm_color_tmpl: Optional[np.ndarray] = None
+        self._nexarm_pitch: Optional[float] = None
+        self._nexarm_keep_open = False
         self._joint_pos = {j: 0.0 for j in self.arm_joints}
         self._pan_pos: Optional[float] = None
+        # Last pan we commanded. _lock_pan republishes this so a stale
+        # joint sample cannot tip the camera back to the approach angle.
+        self._nexarm_pan_cmd: Optional[float] = None
+        self._nexarm_active_pan: Optional[float] = None
+        # True only after the final-pan jaw-edge depth stop fires.
+        self._nexarm_edge_confirmed: bool = False
+        # True after a successful final-pan slew for this grasp.
+        self._nexarm_require_edge_for_pinch: bool = False
         self._left_finger: Optional[float] = None
         self._gripper_joint: Optional[float] = None
         self._last_grip_joint: Optional[float] = None
+        # Measured gripper (echo-filtered). GUI republishes commanded g on
+        # /joint_states; stall/empty must ignore those echoes.
+        self._gripper_meas: Optional[float] = None
+        self._gripper_meas_t: float = 0.0
         self._js_ok_stamp = 0.0  # last time arm joints looked live (not -pi)
         self._busy = False
         self._cancel = False
@@ -520,6 +855,12 @@ class GraspFromClick(Node):
         self._active_goal = None  # FollowJointTrajectory goal handle, if any
         self._pending_click: Optional[dict] = None
         self._last_xyz: Optional[Tuple[float, float, float]] = None
+        self._aim_locked = False
+        self._locked_aim: Optional[Tuple[float, float, float]] = None
+        self._grasp_uv: Optional[Tuple[float, float]] = None
+        self._auto_yaw: Optional[float] = None
+        self._shaft_emit_t = 0.0
+        self._floor_wrist_max: Optional[float] = None
         self._click_anchor: Optional[Tuple[float, float, float]] = None
         self._retreat_q: Optional[List[float]] = None
         self._pending_offset: Optional[Tuple[float, float, float, Optional[float]]] = None
@@ -567,6 +908,8 @@ class GraspFromClick(Node):
         self._reach_mask_pan: Optional[float] = None
         self._cached_reach_mask: Optional[dict] = None
         self._depth_snap_lock = threading.Lock()
+        self._depth_sub_retire: List[Tuple[float, object]] = []
+        self._depth_cb_stamp = 0.0
         self._reach_warn_stamp = 0.0
         self._reach_depth_stamp = 0.0
         self._reach_depth_fail_streak = 0
@@ -581,16 +924,22 @@ class GraspFromClick(Node):
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
-        # Depth is optional — continuous aligned-depth over crossover delays GUI video.
-        if self.subscribe_depth:
-            self.create_subscription(
+        # Depth is polled a few times a second on its own node. A full-rate
+        # callback on this executor holds the GIL and the grasp thread never
+        # gets to publish joint commands. Do not spin that node in a loop,
+        # and do not destroy the subscription.
+        self._depth_exec = None
+        self._depth_poll_stamp = 0.0
+        if self.subscribe_depth or self.click_depth_snapshot:
+            self._depth_node = rclpy.create_node("grasp_depth_cache")
+            self._depth_node.create_subscription(
                 Image, self.depth_topic, self._depth_cb, _DEPTH_QOS
             )
-            self.get_logger().info(f"subscribing to depth {self.depth_topic}")
+            self._depth_exec = SingleThreadedExecutor()
+            self._depth_exec.add_node(self._depth_node)
+            self.get_logger().info(f"depth cache on {self.depth_topic}")
         else:
-            self.get_logger().info(
-                "depth stream off — one-shot aligned-depth on click for 3D wrap/height"
-            )
+            self.get_logger().info("depth stream off")
         self.create_subscription(
             CameraInfo, self.info_topic, self._info_cb, _DEPTH_QOS
         )
@@ -603,12 +952,25 @@ class GraspFromClick(Node):
             )
         elif self.use_wide:
             self.get_logger().warn("use_wide_servo set but OpenCV missing — visual hone-in off")
+        # Pan Dynamixel lives under /d435i_tilt when NexArm owns the arm USB.
+        # Keeping it off /px150_no_elbow prevents arm joint_group traffic from
+        # killing the pan-only xs_sdk.
+        _pan_ns = "/d435i_tilt" if self._nexarm else "/px150_no_elbow"
+        self._pan_ns = _pan_ns
         self.create_subscription(
             JointState,
-            "/px150_no_elbow/joint_states",
+            f"{_pan_ns}/joint_states",
             self._js_cb,
             qos_profile_sensor_data,
         )
+        if self._nexarm:
+            # Arm/gripper state from GUI USB mirror — not the pan Dynamixel bus.
+            self.create_subscription(
+                JointState,
+                "/grab_it/nexarm_joint_states",
+                self._nexarm_js_cb,
+                qos_profile_sensor_data,
+            )
         self.create_subscription(
             String, "/grab_it/grasp_click", self._click_cb, 10, callback_group=self._cg
         )
@@ -618,14 +980,42 @@ class GraspFromClick(Node):
 
         self._status_pub = self.create_publisher(String, "/grab_it/grasp_status", 10)
         self._pole_pub = self.create_publisher(String, "/grab_it/pole_xy", 10)
+        self._shaft_pub = self.create_publisher(String, "/grab_it/shaft_aim", 10)
         self._il_cmd_pub = self.create_publisher(String, "/grab_it/il_command", 10)
         self._gripper_pub = self.create_publisher(
-            JointSingleCommand, "/px150_no_elbow/commands/joint_single", 10
+            JointSingleCommand, f"{_pan_ns}/commands/joint_single", 10
         )
         self._pan_pub = self._gripper_pub
-        self._arm_pub = self.create_publisher(
-            JointGroupCommand, "/px150_no_elbow/commands/joint_group", 10
+        # NexArm jaws are USB via the GUI. Never put gripper on the pan topic.
+        self._nexarm_grip_pub = self.create_publisher(
+            JointState, "/grab_it/nexarm_gripper", 10
         )
+        # NexArm arm must NOT publish on the pan Dynamixel namespace.
+        _arm_topic = (
+            "/grab_it/nexarm_arm"
+            if self._nexarm
+            else "/px150_no_elbow/commands/joint_group"
+        )
+        self._arm_pub = self.create_publisher(
+            JointGroupCommand, _arm_topic, 10
+        )
+        if self._nexarm and self.nexarm_obstacle_stop:
+            self.create_subscription(
+                Imu,
+                self.nexarm_obstacle_imu_topic,
+                self._imu_cb,
+                qos_profile_sensor_data,
+            )
+            self.get_logger().info(
+                f"obstacle stop on (imu {self.nexarm_obstacle_imu_topic}, "
+                f"gap={self.nexarm_obstacle_gap_m:.3f} "
+                f"thick={self.nexarm_obstacle_thick_m:.3f})"
+            )
+        if self._nexarm:
+            self.get_logger().info(
+                f"nexarm arm cmds → {_arm_topic}; "
+                f"pan → {_pan_ns}/commands/joint_single"
+            )
         # Prefer xs joint_group (Nano owns DXL). Traj action is optional.
         self.declare_parameter("use_trajectory_action", False)
         self._use_traj = bool(self.get_parameter("use_trajectory_action").value)
@@ -637,19 +1027,19 @@ class GraspFromClick(Node):
             self, FollowJointTrajectory, self.traj_action, callback_group=self._cg
         )
         self._mode_cli = self.create_client(
-            OperatingModes, "/px150_no_elbow/set_operating_modes", callback_group=self._cg
+            OperatingModes, f"{_pan_ns}/set_operating_modes", callback_group=self._cg
         )
         self._torque_cli = self.create_client(
-            TorqueEnable, "/px150_no_elbow/torque_enable", callback_group=self._cg
+            TorqueEnable, f"{_pan_ns}/torque_enable", callback_group=self._cg
         )
         self._reg_set_cli = self.create_client(
             RegisterValues,
-            "/px150_no_elbow/set_motor_registers",
+            f"{_pan_ns}/set_motor_registers",
             callback_group=self._cg,
         )
         self._reg_get_cli = self.create_client(
             RegisterValues,
-            "/px150_no_elbow/get_motor_registers",
+            f"{_pan_ns}/get_motor_registers",
             callback_group=self._cg,
         )
 
@@ -659,7 +1049,8 @@ class GraspFromClick(Node):
             f"grasp_from_click ready (depth={self.depth_topic}, frame={self.planning_frame}, "
             f"wide_servo={self.use_wide and cv2 is not None}, "
             f"d435i_cube_servo={self.d435i_cube_servo}, "
-            f"act_closes={self._act_closes})"
+            f"act_closes={self._act_closes}, "
+            f"approach_only={bool(getattr(self, 'nexarm_approach_only', False))})"
         )
         self._publish_status("idle", "Ready — click D435i image, then Grasp")
 
@@ -679,6 +1070,11 @@ class GraspFromClick(Node):
         self._last_status_msg = message
         if status == "point" and xyz is not None:
             self._click_anchor = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+            self._aim_locked = True
+            self._locked_aim = self._click_anchor
+        elif status in ("idle", "cancelled", "error"):
+            self._aim_locked = False
+            self._locked_aim = None
         if xyz is not None:
             payload["x"], payload["y"], payload["z"] = xyz
             self._last_xyz = xyz
@@ -700,6 +1096,8 @@ class GraspFromClick(Node):
             "error",
             "cancelled",
             "planning",
+            "grasping",
+            "busy",
             "unreachable",
         ):
             return
@@ -1149,8 +1547,138 @@ class GraspFromClick(Node):
             extra = f"frame={used} corner0_z={z0}"
         self.get_logger().warn(f"D435i gripper cube miss ({why}) {extra}")
 
+    def _taught_base_z(self) -> Optional[float]:
+        """Yaml grasp height in the arm base frame (create3 z minus the arm offset)."""
+        try:
+            import sys
+            from pathlib import Path
+
+            scripts = Path("/workspaces/isaac_ros-dev/scripts")
+            if scripts.is_dir() and str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            from rl_goal_lib import ARM_OFFSET, load_goal
+
+            return float(load_goal()["z"]) - float(ARM_OFFSET[2])
+        except Exception:
+            return None
+
+    def _shaft_from_cache(self) -> Optional[dict]:
+        """Upright object in the depth cache, in the planning frame."""
+        with self._lock:
+            depth = None if self._depth is None else self._depth.copy()
+            info = self._info
+            frame = self._depth_frame or self.camera_frame
+        if depth is None or info is None:
+            self._shaft_why = "no depth"
+            return None
+        was_busy = self._overlay_busy
+        self._overlay_busy = False
+        try:
+            used = self._depth_frame_for_reach(frame)
+            tf = None if used is None else self._tf_matrix(self.planning_frame, used)
+        finally:
+            self._overlay_busy = was_busy
+        if tf is None:
+            self._shaft_why = f"no tf for {frame}"
+            return None
+        self._shaft_why = f"frame {used}"
+        if used and "d435i" in str(used):
+            tf = tf.copy()
+            tf[:3, 3] = tf[:3, 3] + self.click_origin_offset
+        fx, fy = float(info.k[0]), float(info.k[4])
+        cx, cy = float(info.k[2]), float(info.k[5])
+        if fx == 0.0 or fy == 0.0:
+            return None
+        try:
+            from grab_it_grasp.shaft_from_depth import (
+                estimate_shaft_from_depth,
+                project_grasp_uv,
+            )
+        except ImportError:
+            from shaft_from_depth import (  # type: ignore
+                estimate_shaft_from_depth,
+                project_grasp_uv,
+            )
+        grasp_z = self._taught_base_z()
+        aim = estimate_shaft_from_depth(
+            depth,
+            fx,
+            fy,
+            cx,
+            cy,
+            tf[:3, :3],
+            tf[:3, 3],
+            grasp_z=grasp_z,
+            reach=float(self.max_reach),
+        )
+        if aim is None:
+            self._shaft_why = f"no shaft via {used}"
+            return None
+        self._auto_yaw = float(aim["yaw"])
+        dh, dw = depth.shape[:2]
+        uv = project_grasp_uv(
+            (aim["x"], aim["y"], aim["z"]),
+            fx,
+            fy,
+            cx,
+            cy,
+            tf[:3, :3],
+            tf[:3, 3],
+            dw,
+            dh,
+        )
+        if uv is not None:
+            aim["u"], aim["v"] = uv
+            self._grasp_uv = uv
+        return aim
+
+    def _emit_shaft_aim(self) -> None:
+        """Publish the live or click-locked shaft so the GUI hub can mirror it."""
+        now = time.monotonic()
+        if now - self._shaft_emit_t < 0.4:
+            return
+        self._shaft_emit_t = now
+        if self._aim_locked and self._locked_aim is not None:
+            payload = {
+                "ok": True,
+                "locked": True,
+                "x": float(self._locked_aim[0]),
+                "y": float(self._locked_aim[1]),
+                "z": float(self._locked_aim[2]),
+            }
+            if self._auto_yaw is not None:
+                payload["yaw"] = float(self._auto_yaw)
+        else:
+            aim = self._shaft_from_cache()
+            if aim is None:
+                self._shaft_pub.publish(
+                    String(
+                        data=json.dumps(
+                            {
+                                "ok": False,
+                                "locked": False,
+                                "why": getattr(self, "_shaft_why", ""),
+                            }
+                        )
+                    )
+                )
+                return
+            payload = {
+                "ok": True,
+                "locked": False,
+                "x": float(aim["x"]),
+                "y": float(aim["y"]),
+                "z": float(aim["z"]),
+                "yaw": float(aim["yaw"]),
+            }
+            if "u" in aim:
+                payload["u"] = float(aim["u"])
+                payload["v"] = float(aim["v"])
+        self._shaft_pub.publish(String(data=json.dumps(payload)))
+
     def _wide_overlay_tick(self):
         """Re-project the same base_link cubes as the wrist camera / jaws move."""
+        self._poll_depth()
         if self._clicking or self._overlay_busy:
             return
         self._overlay_busy = True
@@ -1160,6 +1688,7 @@ class GraspFromClick(Node):
             self._overlay_busy = False
 
     def _wide_overlay_tick_body(self):
+        self._emit_shaft_aim()
         self._publish_reach_overlay()
         updated = self._refresh_marker_overlay()
         if self._last_xyz is None and self._viz_xyz is None:
@@ -1198,63 +1727,95 @@ class GraspFromClick(Node):
             self.get_logger().warn(f"depth decode: {e}")
             return None
 
+    def _poll_depth(self) -> None:
+        ex = getattr(self, "_depth_exec", None)
+        if ex is None:
+            return
+        now = time.monotonic()
+        min_dt = 0.08 if getattr(self, "_obstacle_watch", False) else 0.5
+        if now - self._depth_poll_stamp < min_dt:
+            return
+        self._depth_poll_stamp = now
+        try:
+            with self._depth_poll_lock:
+                ex.spin_once(timeout_sec=0.0)
+        except Exception as e:
+            self.get_logger().warn(f"depth poll: {e}")
+
     def _depth_cb(self, msg: Image):
+        now = time.monotonic()
+        min_dt = 0.08 if getattr(self, "_obstacle_watch", False) else 0.5
+        if now - self._depth_cb_stamp < min_dt:
+            return
+        self._depth_cb_stamp = now
         depth = self._decode_depth(msg)
         if depth is None:
             return
         with self._lock:
             self._depth = depth
             self._depth_frame = msg.header.frame_id or self.camera_frame
+            self._reach_depth_stamp = time.monotonic()
 
-    def _snapshot_depth(self, timeout_s: float = 1.2) -> Optional[np.ndarray]:
-        """Grab one aligned-depth frame. Does not leave a live subscriber."""
-        if self.subscribe_depth:
-            with self._lock:
-                return None if self._depth is None else self._depth.copy()
-        if not self.click_depth_snapshot:
-            return None
-        # Serialize one-shots — concurrent overlay ticks destroyed the sub mid-callback.
-        if not self._depth_snap_lock.acquire(blocking=False):
-            with self._lock:
-                return None if self._depth is None else self._depth.copy()
-        box: dict = {"img": None, "frame": ""}
-        ev = threading.Event()
+    def _imu_cb(self, msg: Imu) -> None:
+        a = msg.linear_acceleration
+        self._imu_accel = (float(a.x), float(a.y), float(a.z))
+        self._imu_stamp = time.monotonic()
 
-        def _cb(msg: Image):
-            if ev.is_set():
-                return
-            depth = self._decode_depth(msg)
-            if depth is None:
-                return
-            box["img"] = depth
-            box["frame"] = msg.header.frame_id or self.camera_frame
-            ev.set()
+    def _cached_depth(self, max_age: float) -> Optional[np.ndarray]:
+        with self._lock:
+            if self._depth is None:
+                return None
+            age = time.monotonic() - self._reach_depth_stamp
+            if age > max_age:
+                return None
+            return self._depth.copy()
 
-        sub = self.create_subscription(
-            Image,
-            self.depth_topic,
-            _cb,
-            _DEPTH_QOS,
-            callback_group=self._cg,
-        )
-        try:
-            ev.wait(max(0.35, float(timeout_s)))
-        finally:
+    def _retire_depth_sub(self, sub) -> None:
+        """Drop a one-shot depth sub on a later executor turn.
+
+        Destroying it on the click thread races the executor's wait set and
+        kills the node, which leaves the GUI on "Resolving depth…".
+        """
+        with self._lock:
+            self._depth_sub_retire.append((time.monotonic() + 0.4, sub))
+
+    def _flush_retired_depth_subs(self) -> None:
+        with self._lock:
+            pending = self._depth_sub_retire
+            self._depth_sub_retire = []
+        now = time.monotonic()
+        again: List[Tuple[float, object]] = []
+        for when, sub in pending:
+            if when > now:
+                again.append((when, sub))
+                continue
             try:
                 self.destroy_subscription(sub)
             except Exception:
                 pass
-            self._depth_snap_lock.release()
-        if box["img"] is None:
-            self.get_logger().warn(
-                "depth snapshot: no aligned-depth frame (keeping table-plane click)"
-            )
+        if again:
+            with self._lock:
+                self._depth_sub_retire = again + self._depth_sub_retire
+
+    def _snapshot_depth(self, timeout_s: float = 1.2) -> Optional[np.ndarray]:
+        """Return the latest aligned-depth frame from the standing reader."""
+        if not self.subscribe_depth and not self.click_depth_snapshot:
             return None
+        fresh = max(3.0, float(self.d435i_reach_period_s) * 2.0)
+        cached = self._cached_depth(fresh)
+        if cached is not None:
+            return cached
+        deadline = time.monotonic() + max(0.35, float(timeout_s))
+        while time.monotonic() < deadline:
+            cached = self._cached_depth(30.0)
+            if cached is not None:
+                return cached
+            time.sleep(0.05)
+        self.get_logger().warn(
+            "depth snapshot: no aligned-depth frame (keeping table-plane click)"
+        )
         with self._lock:
-            self._depth = box["img"]
-            if box["frame"]:
-                self._depth_frame = box["frame"]
-        return box["img"]
+            return None if self._depth is None else self._depth.copy()
 
     def _info_cb(self, msg: CameraInfo):
         with self._lock:
@@ -1868,7 +2429,8 @@ class GraspFromClick(Node):
         xyz = self._hit_optical_z(T, ray, z)
         if not self._viz_plausible(xyz):
             return None
-        if float(v_norm) < 0.62 and xyz[2] < 0.09:
+        low_z = -0.18 if getattr(self, "_nexarm", False) else 0.09
+        if float(v_norm) < 0.62 and xyz[2] < low_z:
             return None
         return xyz
 
@@ -2420,47 +2982,11 @@ class GraspFromClick(Node):
             return None
         top_z = float(np.percentile(pts[:, 2], 60.0))
         low = top_z <= float(self.floor_object_max_z)
-        # An upper-image patch that only grazes the floor is still the pole.
-        # A top below floor_sure_z is the block, even when the camera is tilted.
-        if float(v_norm) < 0.58 and top_z >= float(self.floor_sure_z):
+        # A mid/upper click is the standing pole, not the bag/floor in the patch.
+        # Floor clicks are decided by the support plane, not this flag.
+        if float(v_norm) < 0.58:
             low = False
         cent = np.mean(pts, axis=0)
-        # The wide patch's nearest surface is the foreground floor, which sits
-        # closer to the base than the block under the cursor. A tight window
-        # on the click is the object to grasp.
-        half = 5
-        tx0, tx1 = max(0, u_px - half), min(w, u_px + half + 1)
-        ty0, ty1 = max(0, v_px - half), min(h, v_px + half + 1)
-        tpatch = depth[ty0:ty1, tx0:tx1]
-        tvalid = (
-            np.isfinite(tpatch)
-            & (tpatch > self.min_depth)
-            & (tpatch < self.max_depth)
-        )
-        if int(np.count_nonzero(tvalid)) >= 8:
-            tys, txs = np.where(tvalid)
-            tz = tpatch[tys, txs].astype(np.float64)
-            tu = (txs + tx0).astype(np.float64)
-            tv = (tys + ty0).astype(np.float64)
-            tcam = np.stack(
-                [(tu - cx) * tz / fx, (tv - cy) * tz / fy, tz, np.ones_like(tz)],
-                axis=1,
-            )
-            tpts = (T_use @ tcam.T).T[:, :3]
-            ttop = float(np.percentile(tpts[:, 2], 60.0))
-            tc = np.median(tpts, axis=0)
-            if ttop <= float(self.floor_sure_z):
-                low = True
-            elif ttop > float(self.floor_object_max_z):
-                low = False
-            if low and ttop <= float(self.floor_object_max_z):
-                top_z = ttop
-                cent = tc
-                self.get_logger().info(
-                    f"floor click window top={ttop:.3f} "
-                    f"({float(tc[0]):.3f},{float(tc[1]):.3f},{float(tc[2]):.3f}) "
-                    f"reach={math.hypot(float(tc[0]), float(tc[1])):.3f}"
-                )
         out: dict = {
             "z": top_z,
             "low": low,
@@ -2924,6 +3450,18 @@ class GraspFromClick(Node):
         return None
 
     def _ee_xyz(self) -> Optional[Tuple[float, float, float]]:
+        if getattr(self, "_nexarm", False):
+            try:
+                ik = self._nexarm_ik_mod()
+                q_real = {
+                    n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints
+                }
+                q = ik.real_to_model_q(q_real)
+                tip = ik.fk_xyz_q(q, tool=0.03)
+                return (float(tip[0]), float(tip[1]), float(tip[2]))
+            except Exception as exc:
+                self.get_logger().warn(f"nexarm FK failed: {exc}")
+                return None
         try:
             tf = self._tf_buffer.lookup_transform(
                 self.planning_frame,
@@ -3059,7 +3597,9 @@ class GraspFromClick(Node):
         return max(float(lo), min(float(hi), float(w)))
 
     def _clamp_shoulder_forward(self, q: List[float]) -> List[float]:
-        """On this 4-DOF, decreasing shoulder lifts the arm (back). Forbid that."""
+        """On PX150 4-DOF, decreasing shoulder lifts the arm (back). Forbid that."""
+        if getattr(self, "_nexarm", False):
+            return q
         if not self._shoulder_forward_only:
             return q
         ish = self._joint_index("shoulder")
@@ -3109,11 +3649,17 @@ class GraspFromClick(Node):
         q = self._solve_ik(pose, gen, nearby=True)
         if q is None or self._is_cancelled(gen):
             return False
+        if getattr(self, "_nexarm", False) and not self._ik_solution_ok(q):
+            self.get_logger().warn(
+                "blocked folded NexArm pose "
+                + str([round(float(v), 3) for v in q])
+            )
+            return False
         q = self._clamp_shoulder_forward(q)
         ir = self._joint_index("wrist_rotate")
         if ir >= 0:
             if wrist_rotate is None:
-                wrist_rotate = float(self._joint_pos.get("wrist_rotate", 0.0))
+                wrist_rotate = self._jget("wrist_rotate", 0.0)
             q[ir] = self._clip_wrist_rotate(wrist_rotate)
         iw = self._joint_index("waist")
         if iw >= 0 and waist is not None:
@@ -3221,6 +3767,2283 @@ class GraspFromClick(Node):
         T, _used = tf
         d_plan = T[:3, :3] @ d_opt
         return float(d_plan[0]), float(d_plan[1])
+
+    def _d435i_track_blob(
+        self,
+        u_n: float,
+        v_n: float,
+        z_ref: Optional[float],
+    ) -> Optional[Tuple[float, float, float]]:
+        """Depth cluster nearest the tracked range, around the last pixel."""
+        with self._lock:
+            depth = None if self._depth is None else self._depth.copy()
+        if depth is None:
+            return None
+        h, w = depth.shape[:2]
+        if h < 8 or w < 8:
+            return None
+        u_px = int(round(float(u_n) * (w - 1)))
+        v_px = int(round(float(v_n) * (h - 1)))
+        rw = max(12, int(0.12 * w))
+        rh = max(12, int(0.12 * h))
+        x0, x1 = max(0, u_px - rw), min(w, u_px + rw + 1)
+        y0, y1 = max(0, v_px - rh), min(h, v_px + rh + 1)
+        patch = depth[y0:y1, x0:x1]
+        valid = np.isfinite(patch) & (patch > self.min_depth) & (patch < self.max_depth)
+        if z_ref is not None and np.isfinite(z_ref):
+            keep = valid & (np.abs(patch - float(z_ref)) < 0.06)
+            if int(np.count_nonzero(keep)) < 25:
+                keep = valid
+        else:
+            keep = valid
+        if int(np.count_nonzero(keep)) < 25:
+            return None
+        ys, xs = np.where(keep)
+        z_vals = patch[ys, xs].astype(np.float64)
+        z_near = float(np.percentile(z_vals, 25.0))
+        sel = np.abs(z_vals - z_near) < 0.045
+        if int(np.count_nonzero(sel)) >= 20:
+            xs, ys, z_vals = xs[sel], ys[sel], z_vals[sel]
+        cu = float(np.mean(xs + x0)) / float(max(1, w - 1))
+        cv = float(np.mean(ys + y0)) / float(max(1, h - 1))
+        return cu, cv, float(np.median(z_vals))
+
+    def _nexarm_build_plan(
+        self,
+        xyz: Optional[Tuple[float, float, float]] = None,
+        seed_q_real: Optional[dict] = None,
+    ) -> Optional[dict]:
+        """Plan a pre-grasp that keeps the click visible at the locked pan.
+
+        ``seed_q_real`` overrides the click-time joint seed (used for mid-
+        approach global replan from the live pose).
+        """
+        ik = self._nexarm_ik_mod()
+        snap = self._nexarm_click_snap or {}
+        g = xyz or snap.get("xyz") or self._viz_xyz or self._last_xyz
+        if g is None:
+            return None
+        # Always seed from the live arm — a stale click-time q after backoff
+        # made grasp_at replans return None.
+        q_real = seed_q_real or {
+            n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints
+        }
+        prefer_front = bool(getattr(self, "nexarm_approach_only", False)) or bool(
+            getattr(self, "nexarm_depth_jaw_align", True)
+        )
+        # Approach-only plans must use the approach pan. Replanning after a
+        # late tip left snap/pan at ~1.15 and IK visibility failed.
+        if prefer_front:
+            pan = float(self.nexarm_pan_approach_rad)
+        else:
+            pan = float(
+                snap.get(
+                    "pan",
+                    self._pan_pos if self._pan_pos is not None else self.pan_lock,
+                )
+            )
+        seed = ik.real_to_model_q(q_real)
+        pitches = list(self.nexarm_pitches_deg)
+        if prefer_front:
+            # Keep level/mild look-down only — -30° left the tip above the
+            # click and empty-pinched after seating.
+            pitches = [0.0, -15.0] + [
+                p for p in pitches if p not in (0.0, -15.0, -30.0)
+            ]
+        gx, gy, gz = float(g[0]), float(g[1]), float(g[2])
+        # Aim at the click height (no downward bias — that was hitting low).
+        plan = ik.plan_approach(
+            (gx, gy, gz),
+            seed,
+            pan,
+            obj_kind=str(snap.get("obj_kind", "low")),
+            tool=float(self.nexarm_tcp_m),
+            pitches_deg=pitches,
+            standoffs_m=list(self.nexarm_standoffs_m),
+            fx=float(snap.get("fx", 610.0)),
+            fy=float(snap.get("fy", 610.0)),
+            cx=float(snap.get("cx", 320.0)),
+            cy=float(snap.get("cy", 240.0)),
+            width=float(snap.get("width", 640.0)),
+            height=float(snap.get("height", 480.0)),
+            uv_margin=float(self.nexarm_uv_margin),
+            prefer_front=prefer_front,
+        )
+        if plan is None:
+            return None
+        plan["pan"] = pan
+        plan["q_pre_real"] = ik.model_to_real_q(plan["q_pre"])
+        plan["q_grasp_real"] = ik.model_to_real_q(plan["q_grasp"])
+        self._nexarm_plan = plan
+        self._nexarm_pitch = float(plan["pitch"])
+        return plan
+
+    def _nexarm_q_list(self, q_real: dict) -> List[float]:
+        return [float(q_real[n]) for n in self.arm_joints]
+
+    def _nexarm_wait_sensors(self, gen: int, settle_s: float = 0.25) -> bool:
+        if not self._sleep_interruptible(float(settle_s), gen):
+            return False
+        # Depth cache is ~2 Hz; wait for a frame after settle.
+        t0 = time.monotonic()
+        stamp0 = float(self._reach_depth_stamp)
+        while time.monotonic() - t0 < 0.8:
+            if self._is_cancelled(gen):
+                return False
+            self._poll_depth()
+            if float(self._reach_depth_stamp) > stamp0 + 0.02:
+                return True
+            time.sleep(0.05)
+        return not self._is_cancelled(gen)
+
+    def _d435i_mouth_sample(self) -> Optional[dict]:
+        """Depth in the open gap between the jaws (approach-pan view).
+
+        Hit rule is *relative elevation*, not an absolute z_max that fights
+        the table: in the mouth corridor, the background (table) is the
+        farther mode; an in-gap object is a coherent closer cluster at least
+        ``nexarm_mouth_elev_m`` in front of that background. Absolute
+        ``mouth_z_*`` only reject invalid / absurd ranges.
+        """
+        if not bool(getattr(self, "nexarm_mouth_stop", True)):
+            return None
+        with self._lock:
+            depth = None if self._depth is None else self._depth.copy()
+        if depth is None:
+            return None
+        h, w = depth.shape[:2]
+        u0 = float(self.nexarm_mouth_u0)
+        u1 = float(self.nexarm_mouth_u1)
+        v0 = float(self.nexarm_mouth_v0)
+        v1 = float(self.nexarm_mouth_v1)
+        x0 = max(0, min(w - 1, int(round(u0 * max(1, w - 1)))))
+        x1 = max(x0 + 1, min(w, int(round(u1 * max(1, w - 1))) + 1))
+        y0 = max(0, min(h - 1, int(round(v0 * max(1, h - 1)))))
+        y1 = max(y0 + 1, min(h, int(round(v1 * max(1, h - 1))) + 1))
+        patch = depth[y0:y1, x0:x1]
+        z_lo = float(self.nexarm_mouth_z_min)
+        z_hi = float(getattr(self, "nexarm_mouth_z_abs_max", 0.35))
+        elev = float(getattr(self, "nexarm_mouth_elev_m", 0.025))
+        min_pix = int(self.nexarm_mouth_min_pix)
+        finite = np.isfinite(patch) & (patch > 0.04) & (patch < 0.55)
+        n_fin = int(np.count_nonzero(finite))
+        if n_fin < 8:
+            return None
+        vals = patch[finite]
+        # Background from the table band only — far outliers (~0.45 m+) made
+        # elev look huge while z≈0.24 was still the table plane.
+        table = finite & (patch >= 0.16) & (patch <= 0.38)
+        if int(np.count_nonzero(table)) >= 20:
+            z_bg = float(np.percentile(patch[table], 60))
+        else:
+            z_bg = float(np.percentile(vals, 70))
+        # Object candidates: closer than table background by elev, still sane.
+        obj = finite & (patch <= z_bg - elev) & (patch >= z_lo) & (patch <= min(z_hi, z_bg - elev + 0.01))
+        n = int(np.count_nonzero(obj))
+        min_frac = float(getattr(self, "nexarm_mouth_min_frac", 0.08))
+        near_z = float(getattr(self, "nexarm_mouth_near_z_max", 0.18))
+        z_p15 = float(np.percentile(vals, 15))
+        z_p50 = float(np.percentile(vals, 50))
+        # Solid fill: object already occupies the whole opening so elev vs
+        # table collapses (bg≈object, elev≈0) — that was "in jaws but not
+        # detected," then keep advancing. Treat a near, coherent patch as hit.
+        solid = bool(
+            n_fin >= max(40, min_pix)
+            and z_p15 <= near_z
+            and z_p50 <= near_z + 0.03
+            and (z_p50 - z_p15) <= 0.06
+        )
+        if n < 1 and not solid:
+            return {
+                "n": 0,
+                "u": 0.5,
+                "v": 0.7,
+                "z": z_p15,
+                "z_bg": z_bg,
+                "elev": 0.0,
+                "frac": 0.0,
+                "hit": False,
+            }
+        if n >= 1:
+            ys, xs = np.where(obj)
+            z = float(np.median(patch[ys, xs]))
+            cu = float(np.mean(xs + x0)) / float(max(1, w - 1))
+            cv = float(np.mean(ys + y0)) / float(max(1, h - 1))
+            elev_meas = float(z_bg - z)
+            frac = float(n) / float(max(1, n_fin))
+        else:
+            # solid fill path — no elev cluster; use near percentiles.
+            near_m = finite & (patch <= near_z + 0.03)
+            ys, xs = np.where(near_m)
+            if int(np.count_nonzero(near_m)) < 1:
+                ys, xs = np.where(finite)
+            z = float(np.median(patch[ys, xs]))
+            cu = float(np.mean(xs + x0)) / float(max(1, w - 1))
+            cv = float(np.mean(ys + y0)) / float(max(1, h - 1))
+            elev_meas = max(0.0, float(z_bg - z))
+            frac = float(np.count_nonzero(near_m)) / float(max(1, n_fin))
+            n = int(np.count_nonzero(near_m))
+        # Elev cluster OR solid near fill of the gripper-opening corridor.
+        hit = bool(
+            (
+                n >= min_pix
+                and elev_meas >= elev * 0.85
+                and frac >= min_frac
+                and frac <= 0.92
+                and z <= near_z
+            )
+            or (
+                solid
+                and z <= near_z + 0.02
+                and frac >= 0.35
+            )
+        )
+        return {
+            "n": n,
+            "u": cu,
+            "v": cv,
+            "z": z,
+            "z_bg": z_bg,
+            "elev": elev_meas,
+            "frac": frac,
+            "hit": hit,
+            "solid": solid,
+        }
+
+    def _d435i_mouth_occupied(self) -> bool:
+        """True when near depth fills the gap between the open jaws."""
+        sample = self._d435i_mouth_sample()
+        return bool(sample and sample.get("hit"))
+
+    def _d435i_jaw_edge_sample(self) -> Optional[dict]:
+        """Near-depth blob in the strip beside the visible jaw's inner edge.
+
+        Valid only after the camera is at ``nexarm_pan_final_rad``. The jaw
+        face itself is inside the D435i minimum range (invalid). A close
+        cluster in the strip means the object has crossed that inner edge.
+        """
+        if not bool(getattr(self, "nexarm_jaw_edge_stop", False)):
+            return None
+        with self._lock:
+            depth = None if self._depth is None else self._depth.copy()
+        if depth is None:
+            return None
+        h, w = depth.shape[:2]
+        u0 = float(self.nexarm_jaw_edge_u0)
+        u1 = float(self.nexarm_jaw_edge_u1)
+        v0 = float(self.nexarm_jaw_edge_v0)
+        v1 = float(self.nexarm_jaw_edge_v1)
+        x0 = max(0, min(w - 1, int(round(u0 * max(1, w - 1)))))
+        x1 = max(x0 + 1, min(w, int(round(u1 * max(1, w - 1))) + 1))
+        y0 = max(0, min(h - 1, int(round(v0 * max(1, h - 1)))))
+        y1 = max(y0 + 1, min(h, int(round(v1 * max(1, h - 1))) + 1))
+        patch = depth[y0:y1, x0:x1]
+        z0 = float(self.nexarm_jaw_edge_z_min)
+        z1 = float(self.nexarm_jaw_edge_z_max)
+        # Prefer near pixels in the jaw-edge band — percentile-of-all lit up
+        # far background (z≈0.43) after tip and never hit.
+        finite = np.isfinite(patch) & (patch > 0.03) & (patch < 0.50)
+        if int(np.count_nonzero(finite)) < 8:
+            return None
+        near = finite & (patch >= z0) & (patch <= z1)
+        n_near = int(np.count_nonzero(near))
+        if n_near >= max(8, int(self.nexarm_jaw_edge_min_pix) // 3):
+            ys, xs = np.where(near)
+            z = float(np.median(patch[ys, xs]))
+            cu = float(np.mean(xs + x0)) / float(max(1, w - 1))
+            cv = float(np.mean(ys + y0)) / float(max(1, h - 1))
+            hit = bool(n_near >= int(self.nexarm_jaw_edge_min_pix))
+            return {"n": n_near, "u": cu, "v": cv, "z": z, "hit": hit}
+        # Soft fallback: anything closer than mid-range in the strip.
+        soft = finite & (patch >= z0) & (patch <= min(0.28, z1 + 0.10))
+        n_soft = int(np.count_nonzero(soft))
+        if n_soft < 1:
+            z_far = float(np.percentile(patch[finite], 20))
+            return {
+                "n": 0,
+                "u": 0.5 * (u0 + u1),
+                "v": 0.5 * (v0 + v1),
+                "z": z_far,
+                "hit": False,
+            }
+        ys, xs = np.where(soft)
+        z = float(np.median(patch[ys, xs]))
+        cu = float(np.mean(xs + x0)) / float(max(1, w - 1))
+        cv = float(np.mean(ys + y0)) / float(max(1, h - 1))
+        hit = bool(n_soft >= int(self.nexarm_jaw_edge_min_pix) and z <= z1 + 0.04)
+        return {"n": n_soft, "u": cu, "v": cv, "z": z, "hit": hit}
+
+    def _d435i_jaw_edge_occupied(self) -> bool:
+        sample = self._d435i_jaw_edge_sample()
+        return bool(sample and sample.get("hit"))
+
+    @staticmethod
+    def _nexarm_depth_stop_decision(
+        target_z_m: Optional[float],
+        mouth_occupied: bool,
+        stop_z_m: float,
+    ) -> bool:
+        """True when depth says the target has reached the open jaw mouth."""
+        return bool(mouth_occupied) or (
+            target_z_m is not None
+            and math.isfinite(float(target_z_m))
+            and float(target_z_m) <= float(stop_z_m)
+        )
+
+    def _nexarm_final_depth_close(
+        self,
+        p_surface: Tuple[float, float, float],
+        q_model: dict,
+        pan: float,
+        snap: dict,
+    ) -> Tuple[bool, Optional[float], bool]:
+        """Fresh final-insert depth gate: (stop, target optical Z, mouth occupied)."""
+        z_m: Optional[float] = None
+        meas = self._nexarm_measure_target(p_surface, q_model, pan, snap)
+        if meas is not None and meas[1] == "depth":
+            z_m = float(meas[2][2])
+        mouth = self._d435i_mouth_occupied()
+        stop = self._nexarm_depth_stop_decision(
+            z_m, mouth, float(self.nexarm_final_depth_stop_m)
+        )
+        return stop, z_m, mouth
+
+    def _nexarm_refresh_color_tmpl(self, u_n: float, v_n: float) -> None:
+        """Recapture the color template near the current object UV."""
+        bgr = self._d435_bgr()
+        if bgr is None or cv2 is None:
+            return
+        bh, bw = bgr.shape[:2]
+        tw = max(16, min(96, int(0.12 * bw)))
+        th = max(16, min(96, int(0.12 * bh)))
+        cu = int(round(float(u_n) * max(1, bw - 1)))
+        cv = int(round(float(v_n) * max(1, bh - 1)))
+        x0t = max(0, cu - tw // 2)
+        y0t = max(0, cv - th // 2)
+        x1t = min(bw, x0t + tw)
+        y1t = min(bh, y0t + th)
+        if x1t - x0t >= 12 and y1t - y0t >= 12:
+            self._nexarm_color_tmpl = bgr[y0t:y1t, x0t:x1t].copy()
+
+    def _nexarm_measure_target(
+        self,
+        p_hat: Tuple[float, float, float],
+        q_model: dict,
+        pan: float,
+        snap: dict,
+    ) -> Optional[Tuple[Tuple[float, float, float], str, Tuple[float, float, float]]]:
+        """Return (measured_xyz, source, pred_uvz) or None if lost."""
+        ik = self._nexarm_ik_mod()
+        origin, R_opt = ik.camera_pose_q(q_model, pan)
+        pred = ik.project_optical(
+            origin,
+            R_opt,
+            p_hat,
+            fx=float(snap.get("fx", 610.0)),
+            fy=float(snap.get("fy", 610.0)),
+            cx=float(snap.get("cx", 320.0)),
+            cy=float(snap.get("cy", 240.0)),
+            width=float(snap.get("width", 640.0)),
+            height=float(snap.get("height", 480.0)),
+        )
+        if pred is None:
+            return None
+        u_p, v_p, z_p = pred
+        with self._lock:
+            depth = None if self._depth is None else self._depth.copy()
+            info = self._info
+        # Depth cluster near the prediction while range is reliable.
+        # Approach-only front hold is ~16 cm; allow a slightly closer band
+        # so lateral centering still gets a depth update.
+        z_min = float(self.nexarm_servo_min_depth_m)
+        if bool(getattr(self, "nexarm_approach_only", False)):
+            # Allow depth updates near a few-cm / in-mouth front hold.
+            z_min = min(
+                z_min,
+                max(0.04, float(getattr(self, "nexarm_front_standoff_m", 0.03)) - 0.005),
+            )
+        if (
+            depth is not None
+            and info is not None
+            and z_p >= z_min
+        ):
+            h, w = depth.shape[:2]
+            u_px = int(round(u_p * max(1, w - 1)))
+            v_px = int(round(v_p * max(1, h - 1)))
+            # Mask the lower gripper band.
+            v_max = int(0.88 * h)
+            rw = max(16, int(0.12 * w))
+            rh = max(16, int(0.12 * h))
+            x0, x1 = max(0, u_px - rw), min(w, u_px + rw + 1)
+            y0, y1 = max(0, v_px - rh), min(v_max, v_px + rh + 1)
+            if y1 > y0 and x1 > x0:
+                patch = depth[y0:y1, x0:x1]
+                z_band = 0.055 if z_p < 0.22 else 0.04
+                valid = (
+                    np.isfinite(patch)
+                    & (patch > max(0.10, self.min_depth))
+                    & (patch < self.max_depth)
+                    & (np.abs(patch - z_p) < z_band)
+                )
+                min_pix = 12 if z_p < 0.22 else 20
+                if int(np.count_nonzero(valid)) >= min_pix:
+                    ys, xs = np.where(valid)
+                    z_vals = patch[ys, xs].astype(np.float64)
+                    cu = float(np.mean(xs + x0)) / float(max(1, w - 1))
+                    cv = float(np.mean(ys + y0)) / float(max(1, h - 1))
+                    zz = float(np.median(z_vals))
+                    ray = self._optical_ray_unnorm(
+                        cu * (w - 1), cv * (h - 1), info
+                    )
+                    if ray is not None:
+                        d = np.array(
+                            [
+                                R_opt[0][0] * ray[0]
+                                + R_opt[0][1] * ray[1]
+                                + R_opt[0][2] * ray[2],
+                                R_opt[1][0] * ray[0]
+                                + R_opt[1][1] * ray[1]
+                                + R_opt[1][2] * ray[2],
+                                R_opt[2][0] * ray[0]
+                                + R_opt[2][1] * ray[1]
+                                + R_opt[2][2] * ray[2],
+                            ],
+                            dtype=np.float64,
+                        )
+                        meas = (
+                            float(origin[0] + zz * d[0]),
+                            float(origin[1] + zz * d[1]),
+                            float(origin[2] + zz * d[2]),
+                        )
+                        return meas, "depth", (cu, cv, zz)
+
+        # Color template match → bearing-only update.
+        tmpl = self._nexarm_color_tmpl
+        bgr = self._d435_bgr()
+        if tmpl is not None and bgr is not None and cv2 is not None:
+            bh, bw = bgr.shape[:2]
+            th, tw = tmpl.shape[:2]
+            # Scale template with predicted range vs click range.
+            z0 = float(snap.get("z_m", z_p) or z_p)
+            scale = max(0.45, min(1.8, float(z0) / max(0.08, float(z_p))))
+            tw2 = max(12, int(round(tw * scale)))
+            th2 = max(12, int(round(th * scale)))
+            tmpl2 = cv2.resize(tmpl, (tw2, th2), interpolation=cv2.INTER_AREA)
+            win = float(self.nexarm_color_search_win)
+            x0 = max(0, int((u_p - win) * bw))
+            x1 = min(bw, int((u_p + win) * bw))
+            y0 = max(0, int((v_p - win) * bh))
+            y1 = min(int(0.90 * bh), int((v_p + win) * bh))
+            if x1 - x0 > tw2 + 4 and y1 - y0 > th2 + 4:
+                roi = bgr[y0:y1, x0:x1]
+                res = cv2.matchTemplate(roi, tmpl2, cv2.TM_CCOEFF_NORMED)
+                _min_v, max_v, _min_l, max_l = cv2.minMaxLoc(res)
+                if float(max_v) >= float(self.nexarm_color_match_thr):
+                    cu = (x0 + max_l[0] + 0.5 * tw2) / float(max(1, bw))
+                    cv = (y0 + max_l[1] + 0.5 * th2) / float(max(1, bh))
+                    # Bearing ray at predicted range.
+                    if info is None:
+                        with self._lock:
+                            info = self._info
+                    if info is not None:
+                        ray = self._optical_ray_unnorm(
+                            cu * max(1, (info.width or bw) - 1),
+                            cv * max(1, (info.height or bh) - 1),
+                            info,
+                        )
+                        if ray is not None:
+                            d = np.array(
+                                [
+                                    R_opt[0][0] * ray[0]
+                                    + R_opt[0][1] * ray[1]
+                                    + R_opt[0][2] * ray[2],
+                                    R_opt[1][0] * ray[0]
+                                    + R_opt[1][1] * ray[1]
+                                    + R_opt[1][2] * ray[2],
+                                    R_opt[2][0] * ray[0]
+                                    + R_opt[2][1] * ray[1]
+                                    + R_opt[2][2] * ray[2],
+                                ],
+                                dtype=np.float64,
+                            )
+                            zz = float(z_p)
+                            meas = (
+                                float(origin[0] + zz * d[0]),
+                                float(origin[1] + zz * d[1]),
+                                float(origin[2] + zz * d[2]),
+                            )
+                            return meas, "color", (cu, cv, zz)
+        return None
+
+    @staticmethod
+    def _nexarm_blind_finish_why(
+        dist_m: float, reached: bool, blocked: bool
+    ) -> str:
+        """Map blind-insert outcome to a servo why code (no false aligned)."""
+        # Only "aligned" when tip is actually on the click (~3 cm).
+        if reached or float(dist_m) <= 0.03:
+            return "aligned"
+        return "blind_blocked"
+
+    def _nexarm_in_jaws_gate(
+        self,
+        ik,
+        ee: Tuple[float, float, float],
+        p_surface: Tuple[float, float, float],
+        p_grasp: Tuple[float, float, float],
+        axis: Tuple[float, float, float],
+        r: float,
+    ) -> str:
+        """Require jaw center near p_grasp laterally and past the front surface."""
+        q_real = {n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints}
+        q_model = ik.real_to_model_q(q_real)
+        links = ik.fk_links_q(q_model, tool=float(self.nexarm_tcp_m))
+        tip = np.array(links["tip"], dtype=np.float64)
+        j0 = np.array(links["jaw0"], dtype=np.float64)
+        j1 = np.array(links["jaw1"], dtype=np.float64)
+        L = j0 - j1
+        Ln = float(np.linalg.norm(L))
+        if Ln < 1e-6:
+            yaw = math.atan2(float(p_grasp[1]), float(p_grasp[0]))
+            L_hat = np.array(
+                [-math.sin(yaw), math.cos(yaw), 0.0], dtype=np.float64
+            )
+        else:
+            L_hat = L / Ln
+        a_hat = np.asarray(axis, dtype=np.float64)
+        a_hat = a_hat / max(1e-9, float(np.linalg.norm(a_hat)))
+        n_hat = np.cross(a_hat, L_hat)
+        nn = float(np.linalg.norm(n_hat))
+        if nn < 1e-6:
+            n_hat = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        else:
+            n_hat = n_hat / nn
+        L_hat = np.cross(n_hat, a_hat)
+        L_hat = L_hat / max(1e-9, float(np.linalg.norm(L_hat)))
+        jaw_c = 0.5 * (j0 + j1)
+        # Prefer FK tip if jaws collapsed; else jaw mid.
+        center = jaw_c if Ln > 1e-4 else tip
+        if ee is not None:
+            # Blend with reported EE for logging consistency.
+            center = 0.5 * (center + np.asarray(ee, dtype=np.float64))
+        rel = np.asarray(p_grasp, dtype=np.float64) - center
+        off_L = abs(float(rel @ L_hat))
+        off_n = abs(float(rel @ n_hat))
+        # Insertion past the front surface along approach (positive into object).
+        insert_depth = float(
+            (center - np.asarray(p_surface, dtype=np.float64)) @ a_hat
+        )
+        need = 0.6 * max(0.01, float(r))
+        ok = off_L <= 0.015 and off_n <= 0.015 and insert_depth >= need
+        self.get_logger().info(
+            f"nexarm in-jaws gate off_L={off_L * 100:.1f}cm "
+            f"off_n={off_n * 100:.1f}cm insert={insert_depth * 100:.1f}cm "
+            f"need={need * 100:.1f}cm → {'aligned' if ok else 'blind_blocked'}"
+        )
+        return "aligned" if ok else "blind_blocked"
+
+    @staticmethod
+    def nexarm_estimate_grasp_from_cloud(
+        pts: np.ndarray,
+        a: Tuple[float, float, float],
+        L: Tuple[float, float, float],
+        n: Tuple[float, float, float],
+        jaw_gap_m: float = 0.050,
+        margin_m: float = 0.008,
+    ) -> Optional[dict]:
+        """From a depth point cloud in base frame, estimate surface + grasp center.
+
+        pts: (N,3). a = approach (into object), L = jaw-open axis, n = a×L.
+        Returns dict with width, p_surface, p_grasp, r, too_wide — or None.
+        """
+        if pts is None or len(pts) < 8:
+            return None
+        P = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        aa = np.asarray(a, dtype=np.float64).copy()
+        LL = np.asarray(L, dtype=np.float64).copy()
+        nn = np.asarray(n, dtype=np.float64).copy()
+        for v in (aa, LL, nn):
+            nv = float(np.linalg.norm(v))
+            if nv < 1e-9:
+                return None
+            v /= nv
+        along_L = P @ LL
+        along_a = P @ aa
+        along_n = P @ nn
+        # Width = 10th–90th percentile along jaw axis.
+        w_lo, w_hi = np.percentile(along_L, [10.0, 90.0])
+        width = float(w_hi - w_lo)
+        # Front surface median along approach.
+        s_front = float(np.median(along_a))
+        band = np.abs(along_a - s_front) <= max(0.012, 0.35 * width)
+        if int(np.count_nonzero(band)) < 5:
+            band = np.ones(len(P), dtype=bool)
+        c_L = float(np.median(along_L[band]))
+        c_n = float(np.median(along_n[band]))
+        # a,L,n orthonormal → world point from the three projections.
+        p_surface = s_front * aa + c_L * LL + c_n * nn
+        r = float(max(0.01, min(0.03, 0.5 * width)))
+        p_grasp = p_surface + r * aa
+        z_lo, z_hi = float(np.min(P[:, 2])), float(np.max(P[:, 2]))
+        p_grasp = np.array(
+            [p_grasp[0], p_grasp[1], min(z_hi, max(z_lo, float(p_grasp[2])))],
+            dtype=np.float64,
+        )
+        too_wide = width > (float(jaw_gap_m) - float(margin_m))
+        return {
+            "width": width,
+            "r": r,
+            "p_surface": (
+                float(p_surface[0]),
+                float(p_surface[1]),
+                float(p_surface[2]),
+            ),
+            "p_grasp": (
+                float(p_grasp[0]),
+                float(p_grasp[1]),
+                float(p_grasp[2]),
+            ),
+            "too_wide": bool(too_wide),
+            "c_L": c_L,
+            "c_n": c_n,
+        }
+
+    def _nexarm_depth_cloud_near_click(
+        self,
+        p_hat: Tuple[float, float, float],
+        q_model: dict,
+        pan: float,
+        snap: dict,
+        n_frames: int = 3,
+    ) -> Optional[np.ndarray]:
+        """Back-project depth cluster near the predicted click UV. Shape (N,3)."""
+        ik = self._nexarm_ik_mod()
+        origin, R_opt = ik.camera_pose_q(q_model, pan)
+        pts_acc: List[np.ndarray] = []
+        for _ in range(max(1, int(n_frames))):
+            with self._lock:
+                depth = None if self._depth is None else self._depth.copy()
+                info = self._info
+            if depth is None or info is None:
+                time.sleep(0.05)
+                continue
+            pred = ik.project_optical(
+                origin,
+                R_opt,
+                p_hat,
+                fx=float(snap.get("fx", 610.0)),
+                fy=float(snap.get("fy", 610.0)),
+                cx=float(snap.get("cx", 320.0)),
+                cy=float(snap.get("cy", 240.0)),
+                width=float(snap.get("width", 640.0)),
+                height=float(snap.get("height", 480.0)),
+            )
+            if pred is None:
+                time.sleep(0.05)
+                continue
+            u_p, v_p, z_p = pred
+            h, w = depth.shape[:2]
+            u_px = int(round(u_p * max(1, w - 1)))
+            v_px = int(round(v_p * max(1, h - 1)))
+            v_max = int(0.88 * h)  # exclude jaw band
+            rw = max(18, int(0.14 * w))
+            rh = max(18, int(0.14 * h))
+            x0, x1 = max(0, u_px - rw), min(w, u_px + rw + 1)
+            y0, y1 = max(0, v_px - rh), min(v_max, v_px + rh + 1)
+            if y1 <= y0 or x1 <= x0:
+                time.sleep(0.05)
+                continue
+            patch = depth[y0:y1, x0:x1]
+            z_band = 0.06 if z_p < 0.28 else 0.045
+            valid = (
+                np.isfinite(patch)
+                & (patch > max(0.10, self.min_depth))
+                & (patch < self.max_depth)
+                & (np.abs(patch - z_p) < z_band)
+            )
+            if int(np.count_nonzero(valid)) < 12:
+                time.sleep(0.05)
+                continue
+            ys, xs = np.where(valid)
+            z_vals = patch[ys, xs].astype(np.float64)
+            for xi, yi, zz in zip(xs + x0, ys + y0, z_vals):
+                ray = self._optical_ray_unnorm(float(xi), float(yi), info)
+                if ray is None:
+                    continue
+                d = np.array(
+                    [
+                        R_opt[0][0] * ray[0]
+                        + R_opt[0][1] * ray[1]
+                        + R_opt[0][2] * ray[2],
+                        R_opt[1][0] * ray[0]
+                        + R_opt[1][1] * ray[1]
+                        + R_opt[1][2] * ray[2],
+                        R_opt[2][0] * ray[0]
+                        + R_opt[2][1] * ray[1]
+                        + R_opt[2][2] * ray[2],
+                    ],
+                    dtype=np.float64,
+                )
+                pts_acc.append(
+                    np.array(
+                        [
+                            origin[0] + zz * d[0],
+                            origin[1] + zz * d[1],
+                            origin[2] + zz * d[2],
+                        ],
+                        dtype=np.float64,
+                    )
+                )
+            time.sleep(0.05)
+        if not pts_acc:
+            return None
+        return np.stack(pts_acc, axis=0)
+
+    def _nexarm_depth_jaw_align(
+        self,
+        ik,
+        gen: int,
+        plan: dict,
+        p_hat: Tuple[float, float, float],
+        pitch: float,
+        pan: float,
+        snap: dict,
+        axis: Tuple[float, float, float],
+        pre_q: List[float],
+    ) -> Tuple[
+        Tuple[float, float, float],
+        Tuple[float, float, float],
+        Tuple[float, float, float],
+        float,
+        str,
+    ]:
+        """Look pose + depth width/center. Returns (p_surface, p_grasp, axis, r, why).
+
+        why='' on success; 'too_wide' / 'align_fail' / 'cancelled' on abort.
+        """
+        look_s = float(getattr(self, "nexarm_align_look_s_m", 0.24))
+        jaw_gap = float(getattr(self, "nexarm_jaw_gap_m", 0.050))
+        yaw = math.atan2(float(p_hat[1]), float(p_hat[0]))
+        ax = ik.approach_axis(pitch, yaw)
+        look_xyz = (
+            float(p_hat[0] - look_s * ax[0]),
+            float(p_hat[1] - look_s * ax[1]),
+            float(p_hat[2] - look_s * ax[2]),
+        )
+        q_real0 = {n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints}
+        sol = ik.ik_position(
+            look_xyz[0],
+            look_xyz[1],
+            look_xyz[2],
+            float(q_real0.get("wrist_roll", 0.0)),
+            seed=ik.real_to_model_q(q_real0),
+            tool=float(self.nexarm_tcp_m),
+            pitch_pref=pitch,
+            avoid_create3=True,
+        )
+        look_q = None
+        if sol is not None:
+            q_try = self._nexarm_q_list(ik.model_to_real_q(sol))
+            if self._ik_solution_ok(q_try):
+                look_q = q_try
+        if look_q is None:
+            look_q = list(pre_q)
+            self.get_logger().warn(
+                "nexarm jaw align: look IK failed — using pre pose"
+            )
+        self._publish_status(
+            "grasping",
+            f"Jaw-align look @ {look_s * 100:.0f} cm…",
+            look_xyz,
+        )
+        old = self.seg_dur
+        self.seg_dur = max(0.9, min(2.0, old))
+        try:
+            if not self._send_trajectory([look_q], gen):
+                return p_hat, p_hat, ax, 0.015, "cancelled"
+        finally:
+            self.seg_dur = old
+        for n, v in zip(self.arm_joints, look_q):
+            self._joint_pos[n] = float(v)
+        if self._is_cancelled(gen):
+            return p_hat, p_hat, ax, 0.015, "cancelled"
+        if not self._nexarm_wait_sensors(gen, 0.30):
+            return p_hat, p_hat, ax, 0.015, "cancelled"
+
+        p_surface = p_hat
+        p_grasp = p_hat
+        r_est = 0.015
+        freeze_xy = False
+        for it in range(3):
+            if self._is_cancelled(gen):
+                return p_surface, p_grasp, ax, r_est, "cancelled"
+            q_real = {n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints}
+            q_model = ik.real_to_model_q(q_real)
+            links = ik.fk_links_q(q_model, tool=float(self.nexarm_tcp_m))
+            j0 = np.array(links["jaw0"], dtype=np.float64)
+            j1 = np.array(links["jaw1"], dtype=np.float64)
+            L_vec = j0 - j1
+            Ln = float(np.linalg.norm(L_vec))
+            if Ln < 1e-6:
+                L_hat = np.array(
+                    [-math.sin(yaw), math.cos(yaw), 0.0], dtype=np.float64
+                )
+            else:
+                L_hat = L_vec / Ln
+            a_hat = np.array(ax, dtype=np.float64)
+            a_hat = a_hat / max(1e-9, float(np.linalg.norm(a_hat)))
+            n_hat = np.cross(a_hat, L_hat)
+            nn = float(np.linalg.norm(n_hat))
+            if nn < 1e-6:
+                n_hat = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+            else:
+                n_hat = n_hat / nn
+            # Re-orthonormalize L against a.
+            L_hat = np.cross(n_hat, a_hat)
+            L_hat = L_hat / max(1e-9, float(np.linalg.norm(L_hat)))
+
+            cloud = self._nexarm_depth_cloud_near_click(
+                p_hat, q_model, pan, snap, n_frames=3
+            )
+            if cloud is None:
+                self.get_logger().warn(
+                    f"nexarm jaw align[{it}]: no depth cloud — keeping click"
+                )
+                break
+            est = self.nexarm_estimate_grasp_from_cloud(
+                cloud,
+                (float(a_hat[0]), float(a_hat[1]), float(a_hat[2])),
+                (float(L_hat[0]), float(L_hat[1]), float(L_hat[2])),
+                (float(n_hat[0]), float(n_hat[1]), float(n_hat[2])),
+                jaw_gap_m=jaw_gap,
+            )
+            if est is None:
+                self.get_logger().warn(
+                    f"nexarm jaw align[{it}]: estimate failed"
+                )
+                break
+            if est["too_wide"]:
+                self.get_logger().warn(
+                    f"nexarm jaw align: width={est['width'] * 100:.1f} cm "
+                    f"> gap={(jaw_gap - 0.008) * 100:.1f} cm — abort"
+                )
+                self._publish_status(
+                    "error",
+                    "Object wider than jaws — click a narrower part",
+                    p_hat,
+                )
+                return (
+                    est["p_surface"],
+                    est["p_grasp"],
+                    ax,
+                    float(est["r"]),
+                    "too_wide",
+                )
+            p_surface = est["p_surface"]
+            p_grasp = est["p_grasp"]
+            r_est = float(est["r"])
+            # Lateral / vertical offset of center from current approach line.
+            tip = np.array(links["tip"], dtype=np.float64)
+            # Approach line through tip along a_hat; measure p_grasp off-axis.
+            rel = np.array(p_grasp, dtype=np.float64) - tip
+            off_L = float(rel @ L_hat)
+            off_n = float(rel @ n_hat)
+            self.get_logger().info(
+                f"nexarm jaw align[{it}]: width={est['width'] * 100:.1f}cm "
+                f"r={r_est * 100:.1f}cm "
+                f"surf=({p_surface[0]:.3f},{p_surface[1]:.3f},{p_surface[2]:.3f}) "
+                f"grasp=({p_grasp[0]:.3f},{p_grasp[1]:.3f},{p_grasp[2]:.3f}) "
+                f"off_L={off_L * 100:.1f}cm off_n={off_n * 100:.1f}cm"
+            )
+            if freeze_xy or (abs(off_L) <= 0.008 and abs(off_n) <= 0.008):
+                break
+            # Re-aim: set p_hat to grasp center, recompute yaw/axis, re-solve look.
+            p_hat = p_grasp
+            yaw = math.atan2(float(p_hat[1]), float(p_hat[0]))
+            ax = ik.approach_axis(pitch, yaw)
+            look_xyz = (
+                float(p_hat[0] - look_s * ax[0]),
+                float(p_hat[1] - look_s * ax[1]),
+                float(p_hat[2] - look_s * ax[2]),
+            )
+            q_model = ik.real_to_model_q(
+                {n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints}
+            )
+            sol2 = ik.ik_position(
+                look_xyz[0],
+                look_xyz[1],
+                look_xyz[2],
+                float(q_model.get("wrist_roll", 0.0)),
+                seed=q_model,
+                tool=float(self.nexarm_tcp_m),
+                pitch_pref=pitch,
+                avoid_create3=True,
+            )
+            if sol2 is None:
+                freeze_xy = True
+                break
+            q2 = self._nexarm_q_list(ik.model_to_real_q(sol2))
+            if not self._ik_solution_ok(q2):
+                freeze_xy = True
+                break
+            old = self.seg_dur
+            self.seg_dur = max(0.6, min(1.4, old))
+            try:
+                ok = self._send_trajectory([q2], gen)
+            finally:
+                self.seg_dur = old
+            if not ok:
+                return p_surface, p_grasp, ax, r_est, "cancelled"
+            for n, v in zip(self.arm_joints, q2):
+                self._joint_pos[n] = float(v)
+            if it >= 2:
+                freeze_xy = True
+        return p_surface, p_grasp, ax, r_est, ""
+
+    def _nexarm_ee_from_joints(self, ik, q_real: dict) -> Tuple[float, float, float]:
+        """FK tip in nexarm_base_link from follower joint dict."""
+        tip = ik.fk_xyz_q(
+            ik.real_to_model_q(q_real), tool=float(self.nexarm_tcp_m)
+        )
+        return (float(tip[0]), float(tip[1]), float(tip[2]))
+
+    def _nexarm_try_global_replan(
+        self,
+        ik,
+        gen: int,
+        p_hat: Tuple[float, float, float],
+        pan: float,
+        old_axis: Tuple[float, float, float],
+        ee: Tuple[float, float, float],
+    ) -> Optional[dict]:
+        """One mid-approach replan from the live pose; move to the new pre."""
+        q_now = {n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints}
+        self.get_logger().warn(
+            "nexarm servo: stall — global replan from live joints "
+            f"el={q_now.get('elbow_flex', 0.0):+.3f} "
+            f"sh={q_now.get('shoulder_lift', 0.0):+.3f} "
+            f"dist={math.dist(ee, p_hat):.3f}"
+        )
+        new_plan = self._nexarm_build_plan(xyz=p_hat, seed_q_real=q_now)
+        if new_plan is None:
+            self.get_logger().warn("nexarm servo: global replan returned None")
+            return None
+        new_pre = new_plan["pre_xyz"]
+        # Safe intermediate: back off along the *old* approach, then new pre.
+        mid = (
+            float(ee[0] - 0.04 * old_axis[0]),
+            float(ee[1] - 0.04 * old_axis[1]),
+            float(ee[2] - 0.04 * old_axis[2]),
+        )
+        q_model = ik.real_to_model_q(q_now)
+        waypoints: List[List[float]] = []
+        for goal, pitch_use in (
+            (mid, float(new_plan["pitch"])),
+            (new_pre, float(new_plan["pitch"])),
+        ):
+            sol = ik.ik_position(
+                goal[0],
+                goal[1],
+                goal[2],
+                float(q_model.get("wrist_roll", 0.0)),
+                seed=q_model,
+                tool=float(self.nexarm_tcp_m),
+                pitch_pref=pitch_use,
+            )
+            if sol is None:
+                continue
+            q_cmd = self._nexarm_q_list(ik.model_to_real_q(sol))
+            if not self._ik_solution_ok(q_cmd):
+                continue
+            waypoints.append(q_cmd)
+            q_model = sol
+        # Always finish at the planned pre-grasp if gated midpoints failed.
+        pre_q = self._nexarm_q_list(new_plan["q_pre_real"])
+        if not self._ik_solution_ok(pre_q):
+            self.get_logger().warn("nexarm servo: replan pre gated")
+            return None
+        if not waypoints or waypoints[-1] != pre_q:
+            waypoints.append(pre_q)
+        self._publish_status(
+            "planning",
+            f"NexArm replan pitch={new_plan['pitch_deg']:.0f}° "
+            f"standoff={new_plan['standoff']:.2f}m",
+            p_hat,
+        )
+        old = self.seg_dur
+        self.seg_dur = max(1.2, min(3.5, old))
+        try:
+            if not self._send_trajectory(waypoints, gen):
+                return None
+        finally:
+            self.seg_dur = old
+        for n, v in zip(self.arm_joints, pre_q):
+            self._joint_pos[n] = float(v)
+        el = float(new_plan["q_pre_real"].get("elbow_flex", 0.0))
+        self.get_logger().info(
+            f"nexarm servo: replan ok pitch={new_plan['pitch_deg']:.0f}° "
+            f"stand={new_plan['standoff']:.2f} el={el:+.3f}"
+        )
+        return new_plan
+
+    def _nexarm_open_loop_grasp(
+        self,
+        gen: int,
+        click_xyz: Tuple[float, float, float],
+    ) -> Tuple[Optional[Tuple[float, float, float]], str]:
+        """Pre-grasp IK then one contact IK to the click; pan fixed.
+
+        No mouth/jaw-edge/seat/creep. Pose comes from calibrated unprojection
+        (or grasp_at); motion is open-loop Cartesian IK like the PX150 path.
+        The contact point is frozen in the arm base at call time — never
+        re-read from image UV while the wrist camera is moving.
+        """
+        ik = self._nexarm_ik_mod()
+        snap = self._nexarm_click_snap or {}
+        # Prefer the click-time snap xyz (base frame) over anything that may
+        # have been overwritten after the camera moved.
+        snap_xyz = snap.get("xyz")
+        if (
+            isinstance(snap_xyz, (tuple, list))
+            and len(snap_xyz) >= 3
+            and all(math.isfinite(float(v)) for v in snap_xyz[:3])
+        ):
+            contact = (
+                float(snap_xyz[0]),
+                float(snap_xyz[1]),
+                float(snap_xyz[2]),
+            )
+        else:
+            contact = (
+                float(click_xyz[0]),
+                float(click_xyz[1]),
+                float(click_xyz[2]),
+            )
+        self._nexarm_grasp_freeze = contact
+        obj_kind = str(snap.get("obj_kind") or "")
+        if not obj_kind:
+            if float(contact[2]) > 0.12:
+                obj_kind = "upright"
+            elif float(contact[2]) < -0.05:
+                obj_kind = "floor"
+            else:
+                obj_kind = "low"
+
+        pan = float(
+            snap.get(
+                "pan",
+                getattr(self, "_nexarm_active_pan", None)
+                or self.nexarm_pan_approach_rad,
+            )
+        )
+        # Freeze pan at the click angle for the whole move (extrinsic locked).
+        self._ensure_pan_tilted(pan)
+        self._nexarm_active_pan = pan
+        self._nexarm_pan_cmd = pan
+        self._lock_pan()
+
+        if not self._in_workspace(contact):
+            self.get_logger().warn(
+                f"nexarm open-loop: contact outside workspace "
+                f"({contact[0]:.3f},{contact[1]:.3f},{contact[2]:.3f})"
+            )
+            return None, "unreachable"
+
+        # Prefer near-horizontal for upright; steeper for low/floor.
+        # No absolute Z gate — table height changes; the fix is freezing
+        # base-frame xyz at click, not re-solving UV after the camera moves.
+        approach_only = bool(getattr(self, "nexarm_approach_only", False))
+        if approach_only:
+            return self._nexarm_stop_pose_approach(gen, contact)
+
+        if float(contact[2]) > 0.12:
+            pitch = math.radians(-15.0)
+        elif float(contact[2]) < 0.05:
+            pitch = math.radians(-60.0)
+        else:
+            pitch = math.radians(-30.0)
+        self._nexarm_pitch = float(pitch)
+
+        standoff = max(0.04, float(self.grasp_standoff_m))
+        yaw = math.atan2(float(contact[1]), float(contact[0]))
+        ax = ik.approach_axis(pitch, yaw)
+        goal = (
+            float(contact[0]),
+            float(contact[1]),
+            float(contact[2]),
+        )
+        pre_s = standoff
+        pre = (
+            float(contact[0] - pre_s * ax[0]),
+            float(contact[1] - pre_s * ax[1]),
+            float(contact[2] - pre_s * ax[2]),
+        )
+
+        def _solve_pre(xyz: Tuple[float, float, float]) -> Optional[List[float]]:
+            for final in (False, True):
+                q = self._solve_ik_nexarm(
+                    self._pose_at(xyz, 0.0),
+                    pitch_pref=pitch,
+                    final_approach=final,
+                )
+                if q is not None:
+                    return q
+            return None
+
+        q_pre = _solve_pre(pre)
+        if q_pre is None:
+            q_pre = self._solve_ik_nexarm(
+                self._pose_at(pre, 0.0),
+                pitch_pref=None,
+                final_approach=True,
+            )
+
+        self.get_logger().info(
+            f"nexarm open-loop contact="
+            f"({contact[0]:.3f},{contact[1]:.3f},{contact[2]:.3f}) "
+            f"goal=({goal[0]:.3f},{goal[1]:.3f},{goal[2]:.3f}) "
+            f"pre=({pre[0]:.3f},{pre[1]:.3f},{pre[2]:.3f}) "
+            f"standoff={pre_s:.3f} "
+            f"pan={pan:.3f} pitch={math.degrees(pitch):.0f}° "
+            f"kind={obj_kind} freeze=base"
+        )
+        if q_pre is None or self._is_cancelled(gen):
+            return None, "pre_ik_fail" if q_pre is None else "cancelled"
+        self._publish_status(
+            "planning",
+            f"NexArm IK pre + approach (standoff {pre_s * 100:.0f} cm)…",
+            contact,
+        )
+
+        def _cart_steps(
+            start_xyz: Tuple[float, float, float],
+            end_xyz: Tuple[float, float, float],
+            seed_q: List[float],
+            step_m: float,
+            *,
+            require_full: bool = True,
+        ) -> Optional[List[List[float]]]:
+            span = math.dist(start_xyz, end_xyz)
+            n_step = max(1, int(math.ceil(max(span, 1e-3) / max(step_m, 0.008))))
+            out: List[List[float]] = []
+            seed = seed_q
+            for i in range(1, n_step + 1):
+                a = i / float(n_step)
+                xyz = (
+                    float(start_xyz[0] + a * (end_xyz[0] - start_xyz[0])),
+                    float(start_xyz[1] + a * (end_xyz[1] - start_xyz[1])),
+                    float(start_xyz[2] + a * (end_xyz[2] - start_xyz[2])),
+                )
+                solved = self._solve_ik_nexarm(
+                    self._pose_at(xyz, 0.0),
+                    prefer_seed=seed,
+                    pitch_pref=pitch,
+                    final_approach=True,
+                )
+                if solved is None:
+                    solved = self._solve_ik_nexarm(
+                        self._pose_at(xyz, 0.0),
+                        prefer_seed=seed,
+                        pitch_pref=None,
+                        final_approach=True,
+                    )
+                if solved is None:
+                    self.get_logger().warn(
+                        f"nexarm open-loop: IK stop at cart step {i}/{n_step}"
+                    )
+                    if require_full or not out:
+                        return None
+                    break
+                jump = max(
+                    abs(float(a) - float(b)) for a, b in zip(seed, solved)
+                )
+                if out and jump > 1.25:
+                    self.get_logger().warn(
+                        f"nexarm open-loop: joint jump {jump:.2f} rad at "
+                        f"step {i}/{n_step} — reject fold"
+                    )
+                    if require_full:
+                        return None
+                    break
+                out.append(solved)
+                seed = solved
+            return out
+
+        self._publish_status("grasping", "Moving to pre-grasp (open)…", contact)
+        old = self.seg_dur
+        self.seg_dur = max(1.4, min(3.5, old))
+        try:
+            if not self._send_trajectory([q_pre], gen):
+                return None, "pre_move_fail"
+        finally:
+            self.seg_dur = old
+        for n, v in zip(self.arm_joints, q_pre):
+            self._joint_pos[n] = float(v)
+        self._retreat_q = [float(v) for v in q_pre]
+        if self._is_cancelled(gen):
+            return None, "cancelled"
+
+        waypoints = _cart_steps(pre, goal, q_pre, 0.03, require_full=False)
+        if not waypoints:
+            q_contact = self._solve_ik_nexarm(
+                self._pose_at(goal, 0.0),
+                prefer_seed=q_pre,
+                pitch_pref=pitch,
+                final_approach=True,
+            )
+            if q_contact is None:
+                return None, "contact_ik_fail"
+            waypoints = [q_contact]
+
+        self._publish_status(
+            "grasping",
+            "Approaching grasp (open)…",
+            contact,
+        )
+        old = self.seg_dur
+        self.seg_dur = max(1.0, min(3.0, old))
+        try:
+            if not self._send_trajectory(waypoints, gen):
+                return None, "contact_move_fail"
+        finally:
+            self.seg_dur = old
+        q_last = waypoints[-1]
+        for n, v in zip(self.arm_joints, q_last):
+            self._joint_pos[n] = float(v)
+        self._retreat_q = [float(v) for v in q_last]
+        if self._is_cancelled(gen):
+            return None, "cancelled"
+
+        ee = contact
+        self.get_logger().info(
+            f"nexarm open-loop done ee=({ee[0]:.3f},{ee[1]:.3f},{ee[2]:.3f}) "
+            f"click=({contact[0]:.3f},{contact[1]:.3f},{contact[2]:.3f})"
+        )
+        return ee, "aligned"
+
+    def _nexarm_servo_grasp(
+        self, gen: int
+    ) -> Tuple[Optional[Tuple[float, float, float]], str]:
+        """Open-loop pre + contact IK; no visual-servo creep."""
+        snap = self._nexarm_click_snap or {}
+        xyz = (
+            snap.get("xyz")
+            or self._viz_xyz
+            or self._last_xyz
+            or self._click_anchor
+        )
+        if xyz is None:
+            return None, "no_plan"
+        return self._nexarm_open_loop_grasp(
+            gen, (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+        )
+
+    def _nexarm_seat_for_pinch(
+        self,
+        ik,
+        gen: int,
+        p_hat: Tuple[float, float, float],
+        pitch: float,
+        pan: float,
+        ee: Tuple[float, float, float],
+    ) -> Tuple[float, float, float]:
+        """One coherent pre-pinch seat: lateral jaw bias, then a short insert.
+
+        Empty pinches were closing beside / short of the object after the
+        mouth gate. Keep this as the single seat path (not ad-hoc skips).
+        """
+        # Seat through the click: TCP was stopping ~2 cm short. Allow a
+        # slight overshoot so the finger pads reach the object volume.
+        seat_floor = float(getattr(self, "nexarm_seat_floor_m", -0.005))
+        bias_mag = abs(float(getattr(self, "nexarm_pinch_jaw_bias_m", 0.020)))
+        seat = float(getattr(self, "nexarm_pinch_seat_m", 0.055))
+        s_now = math.dist(ee, p_hat)
+        hold_s = max(0.02, min(s_now, 0.065))
+        # Lateral probes shove soft objects out of the gap. If the current
+        # mouth already has a strong elevation, skip probing and insert.
+        # Pinch-time D435i showed the plush left of the near finger — bias
+        # toward camera-left (positive jaw_bias) so the gap covers it.
+        ee0 = ee
+        q0 = {n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints}
+        sample0 = self._d435i_mouth_sample()
+        elev0 = float(sample0.get("elev", 0.0)) if sample0 else 0.0
+        n0 = int(sample0.get("n", 0)) if sample0 else 0
+        frac0 = float(sample0.get("frac", 0.0)) if sample0 else 0.0
+        cu0 = float(sample0.get("u", 0.5)) if sample0 else 0.5
+        score0 = elev0 * 100.0 + 0.01 * float(n0)
+        best_ee = ee
+        best_score = score0
+        best_bias = 0.0
+        elev_need = float(getattr(self, "nexarm_mouth_elev_m", 0.040))
+        # Object already filling the opening — do not drive past the click
+        # (seat→floor−5cm + cube_ox knocked soft targets over / overextended).
+        already_in = bool(
+            elev0 >= elev_need * 0.85
+            and (frac0 >= 0.18 or n0 >= 200)
+        )
+        if already_in:
+            seat = min(float(seat), 0.012)
+            seat_floor = max(float(seat_floor), 0.0)
+            self.get_logger().info(
+                f"nexarm seat already-in-opening elev={elev0:.3f} "
+                f"frac={frac0:.2f} n={n0} — tiny insert seat={seat:.3f} "
+                f"floor={seat_floor:.3f}"
+            )
+        force_lat = float(getattr(self, "nexarm_pinch_force_left_m", 0.0))
+        if abs(force_lat) > 1e-4 and score0 >= elev_need * 80.0:
+            # +bias = tip toward image-left; -bias = image-right.
+            best_bias = force_lat
+            best_ee = self._nexarm_jaw_bias_shift(
+                ik, gen, p_hat, pitch, pan, ee0, best_bias, hold_s
+            )
+            ee = best_ee
+            self.get_logger().info(
+                f"nexarm seat force lateral bias={best_bias:+.3f} "
+                f"(mouth u={cu0:.2f} elev={elev0:.3f})"
+            )
+        elif score0 >= elev_need * 100.0 * 0.9 and n0 >= 40:
+            self.get_logger().info(
+                f"nexarm seat skip probe — center elev={elev0:.3f} n={n0} "
+                f"score={score0:.2f}"
+            )
+        else:
+            last_bias = 0.0
+            for bias in (0.0, bias_mag, -bias_mag):
+                if self._is_cancelled(gen):
+                    return ee
+                trial = (
+                    ee0
+                    if abs(bias) < 1e-4
+                    else self._nexarm_jaw_bias_shift(
+                        ik, gen, p_hat, pitch, pan, ee0, bias, hold_s
+                    )
+                )
+                last_bias = float(bias)
+                sample = self._d435i_mouth_sample()
+                elev = float(sample.get("elev", 0.0)) if sample else 0.0
+                n = int(sample.get("n", 0)) if sample else 0
+                score = elev * 100.0 + 0.01 * float(n)
+                self.get_logger().info(
+                    f"nexarm seat probe bias={bias:+.3f} elev={elev:.3f} n={n} "
+                    f"score={score:.2f}"
+                )
+                if score > best_score:
+                    best_score = score
+                    best_ee = trial
+                    best_bias = bias
+            if abs(float(best_bias) - float(last_bias)) > 1e-4:
+                if abs(best_bias) < 1e-4:
+                    q_cmd = self._nexarm_q_list(q0)
+                    old_dur = self.seg_dur
+                    self.seg_dur = max(0.40, min(0.80, old_dur))
+                    try:
+                        ok = self._send_trajectory([q_cmd], gen)
+                    finally:
+                        self.seg_dur = old_dur
+                    if ok:
+                        for n, v in zip(self.arm_joints, q_cmd):
+                            self._joint_pos[n] = float(v)
+                        ee = ee0
+                    else:
+                        ee = best_ee
+                else:
+                    ee = self._nexarm_jaw_bias_shift(
+                        ik, gen, p_hat, pitch, pan, ee0, best_bias, hold_s
+                    )
+            else:
+                ee = best_ee
+        self.get_logger().info(
+            f"nexarm seat chose bias={best_bias:+.3f} score={best_score:.2f}"
+        )
+        if self._is_cancelled(gen) or seat < 1e-4:
+            return ee
+        if not self._nexarm_wait_sensors(gen, 0.08):
+            return ee
+        q_real = {n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints}
+        q_model = ik.real_to_model_q(q_real)
+        yaw = math.atan2(float(p_hat[1]), float(p_hat[0]))
+        axis = ik.approach_axis(pitch, yaw)
+        # Measure range from the live EE after restore — not a stale probe pose.
+        cur_ee = self._nexarm_ee_from_joints(ik, q_real)
+        if cur_ee is not None:
+            ee = (
+                float(cur_ee[0]),
+                float(cur_ee[1]),
+                float(cur_ee[2]),
+            )
+        s_meas = (
+            (p_hat[0] - ee[0]) * axis[0]
+            + (p_hat[1] - ee[1]) * axis[1]
+            + (p_hat[2] - ee[2]) * axis[2]
+        )
+        # Also push past by the jaw-cube offset (pads sit ahead of TCP).
+        # Skip cube overshoot when the opening is already filled.
+        cube_ox = (
+            0.0
+            if already_in
+            else abs(float(getattr(self, "gripper_cube_offset_x", 0.03)))
+        )
+        s_next = max(seat_floor, float(s_meas) - seat - cube_ox)
+        # Hard cap: never travel more than 2.5 cm when already in-opening,
+        # else 4 cm — prevents knock-over / overextend on soft targets.
+        max_travel = 0.025 if already_in else 0.040
+        if float(s_meas) - float(s_next) > max_travel:
+            s_next = float(s_meas) - max_travel
+        z_drop = float(getattr(self, "nexarm_seat_z_drop_m", 0.018))
+        if already_in:
+            z_drop = min(z_drop, 0.005)
+        if s_next >= float(s_meas) - 1e-4 and z_drop < 1e-4:
+            return ee
+        # Close while seating so soft plush is caught before being shoved out.
+        close_during = bool(getattr(self, "nexarm_pinch_during_seat", True))
+        if close_during:
+            try:
+                self._publish_gripper_joint(
+                    float(self.grip_joint_open) * 0.55
+                    + float(self.grip_joint_closed) * 0.45,
+                    n=2,
+                )
+            except Exception:
+                pass
+        if s_next < float(s_meas) - 1e-4:
+            # Advance along approach from the *current* (possibly biased) EE so
+            # a lateral jaw bias is not wiped by aiming back at p_hat.
+            travel = float(s_meas) - float(s_next)
+            goal = (
+                float(ee[0] + travel * axis[0]),
+                float(ee[1] + travel * axis[1]),
+                float(ee[2] + travel * axis[2]),
+            )
+        else:
+            goal = (float(ee[0]), float(ee[1]), float(ee[2]))
+        goal = (goal[0], goal[1], float(goal[2]) - z_drop)
+        sol = ik.ik_position(
+            goal[0],
+            goal[1],
+            goal[2],
+            float(q_model.get("wrist_roll", 0.0)),
+            seed=q_model,
+            tool=float(self.nexarm_tcp_m),
+            pitch_pref=pitch,
+            avoid_create3=True,
+        )
+        if sol is None:
+            return ee
+        q_cmd = self._nexarm_q_list(ik.model_to_real_q(sol))
+        if not self._ik_solution_ok(q_cmd, final_approach=True):
+            return ee
+        old_dur = self.seg_dur
+        self.seg_dur = max(0.50, min(0.90, old_dur))
+        try:
+            ok = self._send_trajectory([q_cmd], gen)
+        finally:
+            self.seg_dur = old_dur
+        if not ok:
+            return ee
+        for n, v in zip(self.arm_joints, q_cmd):
+            self._joint_pos[n] = float(v)
+        cur = self._nexarm_ee_from_joints(
+            ik, {n: float(v) for n, v in zip(self.arm_joints, q_cmd)}
+        )
+        self.get_logger().info(
+            f"nexarm pinch seat bias={best_bias:+.3f} insert={seat:.3f} "
+            f"s={s_meas:.3f}->{s_next:.3f} z_drop={z_drop:.3f} "
+            f"cube_ox={cube_ox:.3f} "
+            f"ee=({cur[0]:.3f},{cur[1]:.3f},{cur[2]:.3f})"
+        )
+        return cur
+
+    def _nexarm_jaw_bias_shift(
+        self,
+        ik,
+        gen: int,
+        p_hat: Tuple[float, float, float],
+        pitch: float,
+        pan: float,
+        ee: Tuple[float, float, float],
+        jaw_bias: float,
+        hold_s: float,
+    ) -> Tuple[float, float, float]:
+        """Translate tip opposite camera-right so the mouth covers p_hat."""
+        if abs(float(jaw_bias)) < 1e-4 or self._is_cancelled(gen):
+            return ee
+        if not self._nexarm_wait_sensors(gen, 0.10):
+            return ee
+        q_real = {n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints}
+        q_model = ik.real_to_model_q(q_real)
+        _orig, R_opt = ik.camera_pose_q(q_model, pan)
+        right = (R_opt[0][0], R_opt[1][0], R_opt[2][0])
+        tip_shift = (
+            float(ee[0] - jaw_bias * right[0]),
+            float(ee[1] - jaw_bias * right[1]),
+            float(ee[2] - jaw_bias * right[2]),
+        )
+        to_tgt = (
+            p_hat[0] - tip_shift[0],
+            p_hat[1] - tip_shift[1],
+            p_hat[2] - tip_shift[2],
+        )
+        tn = math.sqrt(sum(a * a for a in to_tgt))
+        if tn <= 1e-6:
+            return ee
+        tip_aim = (
+            float(p_hat[0] - hold_s * to_tgt[0] / tn),
+            float(p_hat[1] - hold_s * to_tgt[1] / tn),
+            float(p_hat[2] - hold_s * to_tgt[2] / tn),
+        )
+        sol = ik.ik_position(
+            tip_aim[0],
+            tip_aim[1],
+            tip_aim[2],
+            float(q_model.get("wrist_roll", 0.0)),
+            seed=q_model,
+            tool=float(self.nexarm_tcp_m),
+            pitch_pref=pitch,
+            avoid_create3=True,
+        )
+        if sol is None:
+            return ee
+        q_cmd = self._nexarm_q_list(ik.model_to_real_q(sol))
+        if not self._ik_solution_ok(q_cmd, final_approach=True):
+            return ee
+        old_dur = self.seg_dur
+        self.seg_dur = max(0.40, min(0.80, old_dur))
+        try:
+            ok = self._send_trajectory([q_cmd], gen)
+        finally:
+            self.seg_dur = old_dur
+        if not ok:
+            return ee
+        for n, v in zip(self.arm_joints, q_cmd):
+            self._joint_pos[n] = float(v)
+        cur = self._nexarm_ee_from_joints(
+            ik, {n: float(v) for n, v in zip(self.arm_joints, q_cmd)}
+        )
+        self.get_logger().info(
+            f"nexarm pinch jaw bias {jaw_bias:.3f}m "
+            f"ee=({cur[0]:.3f},{cur[1]:.3f},{cur[2]:.3f})"
+        )
+        return cur
+
+    def _nexarm_advance_into_gripper(
+        self,
+        ik,
+        gen: int,
+        p_hat: Tuple[float, float, float],
+        pitch: float,
+        pan: float,
+        snap: dict,
+        ee: Tuple[float, float, float],
+    ) -> Tuple[Tuple[float, float, float], str]:
+        """Creep until the tip engulfs the click with jaws open.
+
+        Pan blends approach→final with range so the gripper-opening depth
+        corridor stays useful. Mouth ROI (gap between fingers) gates stop
+        only once geometrically engulfed — earlier hits meant "visible in
+        gap but still short." Seat then finishes through the click.
+        Never pinches — approach_only hold only.
+        """
+        # Allow creeping closer than the old 5.5 cm floor — that left the
+        # tip short of the object volume before pinch.
+        floor_s = max(0.018, float(self.nexarm_in_gripper_floor_m))
+        # Stop on live mouth elevation a few cm short; seat finishes into pads.
+        engulf_s = float(getattr(self, "nexarm_engulf_s_m", 0.070))
+        step_m = max(0.004, min(0.008, float(self.nexarm_final_step_m)))
+        cur = (
+            float(ee[0]),
+            float(ee[1]),
+            float(ee[2]),
+        )
+        pan_approach = float(pan)
+        tip_after = bool(getattr(self, "nexarm_jaw_edge_stop", False))
+        self._nexarm_edge_confirmed = False
+        self._nexarm_pinch_seated = False
+        self._nexarm_require_edge_for_pinch = bool(
+            getattr(self, "nexarm_mouth_stop", True)
+        )
+        mouth_confirmed = False
+        mouth_streak = 0
+        self._ensure_pan_tilted(pan_approach)
+        self._nexarm_active_pan = pan_approach
+        pan = pan_approach
+        if isinstance(snap, dict):
+            snap["pan"] = pan_approach
+        max_iters = max(
+            6,
+            int(
+                math.ceil(
+                    max(0.02, float(self.nexarm_front_standoff_m) - floor_s)
+                    / step_m
+                )
+                + 4
+            ),
+        )
+        sense_miss = 0
+        last_good_z: Optional[float] = None
+        last_mouth_n = 0
+        last_mouth_z: Optional[float] = None
+        last_mouth_elev = 0.0
+        for i in range(max_iters):
+            if self._is_cancelled(gen):
+                return cur, "cancelled"
+            if not self._nexarm_wait_sensors(gen, 0.12):
+                return cur, "cancelled"
+            q_real = {
+                n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints
+            }
+            q_model = ik.real_to_model_q(q_real)
+            yaw = math.atan2(float(p_hat[1]), float(p_hat[0]))
+            axis = ik.approach_axis(pitch, yaw)
+            s_meas = (
+                (p_hat[0] - cur[0]) * axis[0]
+                + (p_hat[1] - cur[1]) * axis[1]
+                + (p_hat[2] - cur[2]) * axis[2]
+            )
+            # Gradual tip: deepen the look into the jaws as s shrinks.
+            if tip_after:
+                pan_cmd = self._nexarm_pan_blend_for_s(s_meas)
+                if abs(pan_cmd - float(pan)) > 0.04:
+                    self._nexarm_pan_nudge(pan_cmd, bursts=3)
+                    pan = pan_cmd
+                    if isinstance(snap, dict):
+                        snap["pan"] = pan_cmd
+            z_now: Optional[float] = None
+            src = "none"
+            meas = self._nexarm_measure_target(p_hat, q_model, pan, snap)
+            if meas is not None:
+                src = str(meas[1])
+                z_now = float(meas[2][2])
+                if math.isfinite(z_now):
+                    last_good_z = z_now
+            mouth_s = self._d435i_mouth_sample()
+            mouth_hit = bool(mouth_s and mouth_s.get("hit"))
+            mouth_frac = (
+                float(mouth_s.get("frac", 0.0)) if mouth_s is not None else 0.0
+            )
+            if mouth_s is not None and int(mouth_s.get("n", 0)) > 0:
+                last_mouth_n = int(mouth_s["n"])
+                last_mouth_z = float(mouth_s["z"])
+                last_mouth_elev = float(mouth_s.get("elev", 0.0))
+            # Engulf zone: mouth depth in the gripper gap AND tip close enough
+            # that the object is between the pads — not merely visible ahead.
+            # Strong mouth fill (frac≳0.2) means the object is already in the
+            # opening — stop without waiting for geometric engulf (kept
+            # pushing, knocked the target over, then overextended).
+            near_geom = float(s_meas) <= max(floor_s + 0.02, engulf_s + 0.015)
+            engulfed = float(s_meas) <= engulf_s
+            filled_in_opening = bool(
+                mouth_hit
+                and mouth_frac >= 0.18
+                and float(s_meas) <= max(0.090, engulf_s + 0.045)
+            )
+            if mouth_hit and (engulfed or filled_in_opening):
+                mouth_streak += 1
+            else:
+                mouth_streak = 0
+            stop_now = mouth_streak >= 1 and (
+                (mouth_hit and engulfed) or filled_in_opening
+            )
+            sensed = (
+                mouth_hit
+                or (mouth_s is not None and int(mouth_s.get("n", 0)) > 0)
+                or (z_now is not None and math.isfinite(z_now))
+            )
+            if sensed:
+                sense_miss = 0
+            else:
+                sense_miss += 1
+            mouth_log = (
+                "none"
+                if mouth_s is None
+                else (
+                    f"n={mouth_s['n']} uv=({mouth_s['u']:.2f},"
+                    f"{mouth_s['v']:.2f}) z={mouth_s['z']:.3f} "
+                    f"bg={mouth_s.get('z_bg', float('nan')):.3f} "
+                    f"elev={mouth_s.get('elev', 0.0):.3f} "
+                    f"frac={mouth_s.get('frac', 0.0):.2f} hit={mouth_hit}"
+                )
+            )
+            self.get_logger().info(
+                f"nexarm in-gripper {i + 1}: s={s_meas:.3f} "
+                f"z={z_now} src={src} mouth={mouth_log} "
+                f"near={near_geom} engulf={engulfed} streak={mouth_streak} "
+                f"stop={stop_now} miss={sense_miss} floor={floor_s:.3f} "
+                f"pan={pan:.2f}"
+            )
+
+            if stop_now:
+                mouth_confirmed = True
+                self._nexarm_edge_confirmed = True
+                why_stop = (
+                    "filled opening"
+                    if filled_in_opening and not engulfed
+                    else "engulfed opening"
+                )
+                self.get_logger().info(
+                    f"nexarm in-gripper: {why_stop} "
+                    f"(frac={mouth_frac:.2f} s={s_meas:.3f}) — seat"
+                )
+                cur = self._nexarm_seat_for_pinch(
+                    ik, gen, p_hat, pitch, float(pan), cur
+                )
+                self._nexarm_pinch_seated = True
+                # Tip to pan_final + jaw-edge confirm happens in the pinch
+                # path after seat (keeps mouth ROI valid through creep).
+                return cur, "front"
+            if s_meas <= floor_s + 0.005:
+                z_lim = float(self.nexarm_mouth_z_max) + 0.04
+                z_soft = (
+                    z_now
+                    if z_now is not None and math.isfinite(float(z_now))
+                    else last_good_z
+                )
+                track_soft = (
+                    near_geom
+                    and z_soft is not None
+                    and math.isfinite(float(z_soft))
+                    and float(z_soft) <= z_lim
+                )
+                # Live (this frame) elevated gap only — stale last_mouth_* after
+                # a tipped pan produced empty pinches at the click.
+                elev_need = float(getattr(self, "nexarm_mouth_elev_m", 0.025))
+                live_elev = (
+                    float(mouth_s.get("elev", 0.0)) if mouth_s else 0.0
+                )
+                live_n = int(mouth_s.get("n", 0)) if mouth_s else 0
+                partial_mouth = (
+                    near_geom
+                    and live_n >= 20
+                    and live_elev >= elev_need * 0.7
+                )
+                if mouth_hit or partial_mouth or (
+                    track_soft and live_n >= 15 and live_elev >= elev_need * 0.5
+                ):
+                    why_s = (
+                        "mouth"
+                        if mouth_hit
+                        else ("partial_mouth" if partial_mouth else "track")
+                    )
+                    mouth_confirmed = True
+                    self._nexarm_edge_confirmed = True
+                    self.get_logger().info(
+                        f"nexarm in-gripper: floor s={s_meas:.3f} "
+                        f"with {why_s} depth "
+                        f"(z={z_soft} mouth_n={last_mouth_n} "
+                        f"mouth_z={last_mouth_z}) — seat"
+                    )
+                    cur = self._nexarm_seat_for_pinch(
+                        ik, gen, p_hat, pitch, float(pan), cur
+                    )
+                    self._nexarm_pinch_seated = True
+                    return cur, "front"
+                # One in-frame lateral pull only — never push through on a
+                # mouth miss (that knocked the target over / overextended).
+                proj = self._project_xyz_to_d435i(p_hat, urdf_cam=True)
+                click_u = float(proj[0]) if proj is not None else None
+                click_v = float(proj[1]) if proj is not None else None
+                mu0 = float(self.nexarm_mouth_u0)
+                mu1 = float(self.nexarm_mouth_u1)
+                mid_u = 0.5 * (mu0 + mu1)
+                uv_ok = (
+                    click_u is not None
+                    and click_v is not None
+                    and 0.05 <= float(click_u) <= 0.95
+                    and 0.05 <= float(click_v) <= 0.95
+                )
+                if uv_ok and abs(float(click_u) - mid_u) > 0.08:
+                    # +bias → tip image-left; object on image-right needs −bias.
+                    err_u = float(click_u) - mid_u
+                    lat = float(max(-0.030, min(0.030, -0.07 * err_u)))
+                    self.get_logger().info(
+                        f"nexarm in-gripper: floor lateral pull "
+                        f"uv=({click_u:.2f},{click_v:.2f}) "
+                        f"bias={lat:+.3f} toward mouth mid={mid_u:.2f}"
+                    )
+                    cur = self._nexarm_jaw_bias_shift(
+                        ik,
+                        gen,
+                        p_hat,
+                        pitch,
+                        float(pan),
+                        cur,
+                        lat,
+                        max(floor_s, float(s_meas)),
+                    )
+                    if not self._nexarm_wait_sensors(gen, 0.12):
+                        return cur, "front_miss"
+                    mouth_s = self._d435i_mouth_sample()
+                    mouth_hit = bool(mouth_s and mouth_s.get("hit"))
+                    live_n = int(mouth_s.get("n", 0)) if mouth_s else 0
+                    live_elev = (
+                        float(mouth_s.get("elev", 0.0)) if mouth_s else 0.0
+                    )
+                    live_frac = (
+                        float(mouth_s.get("frac", 0.0)) if mouth_s else 0.0
+                    )
+                    if mouth_hit or (
+                        live_n >= 25
+                        and live_elev >= elev_need * 0.7
+                        and live_frac >= 0.12
+                    ):
+                        mouth_confirmed = True
+                        self._nexarm_edge_confirmed = True
+                        self.get_logger().info(
+                            "nexarm in-gripper: mouth after lateral — seat"
+                        )
+                        cur = self._nexarm_seat_for_pinch(
+                            ik, gen, p_hat, pitch, float(pan), cur
+                        )
+                        self._nexarm_pinch_seated = True
+                        return cur, "front"
+                self.get_logger().warn(
+                    f"nexarm in-gripper: floor s={s_meas:.3f} "
+                    "without mouth fill — hold tip, no push "
+                    f"(uv="
+                    f"{'n/a' if click_u is None else f'{click_u:.2f},{click_v:.2f}'}"
+                    f")"
+                )
+                return cur, "front_miss"
+            if not sensed and sense_miss == 1:
+                self.get_logger().info(
+                    "nexarm in-gripper: depth miss — geometric step to floor"
+                )
+            # Keep the gripper-opening corridor on the click while creeping.
+            # Ignore out-of-frame UV (e.g. u=0.91,v=-0.76) — those lateral
+            # shoves knocked the object while the tip kept advancing.
+            proj = self._project_xyz_to_d435i(p_hat, urdf_cam=True)
+            if proj is not None and float(s_meas) <= 0.085:
+                click_u, click_v = float(proj[0]), float(proj[1])
+                uv_ok = (
+                    0.05 <= click_u <= 0.95 and 0.05 <= click_v <= 0.95
+                )
+                mu0 = float(self.nexarm_mouth_u0)
+                mu1 = float(self.nexarm_mouth_u1)
+                mid_u = 0.5 * (mu0 + mu1)
+                err_u = click_u - mid_u
+                if uv_ok and abs(err_u) > 0.10:
+                    lat = float(max(-0.015, min(0.015, -0.05 * err_u)))
+                    cur = self._nexarm_jaw_bias_shift(
+                        ik,
+                        gen,
+                        p_hat,
+                        pitch,
+                        float(pan),
+                        cur,
+                        lat,
+                        max(floor_s, float(s_meas)),
+                    )
+                    self.get_logger().info(
+                        f"nexarm in-gripper: mid-creep lateral "
+                        f"uv=({click_u:.2f},{click_v:.2f}) "
+                        f"bias={lat:+.3f}"
+                    )
+                elif not uv_ok and abs(err_u) > 0.10:
+                    self.get_logger().info(
+                        f"nexarm in-gripper: skip lateral "
+                        f"uv=({click_u:.2f},{click_v:.2f}) out-of-frame"
+                    )
+            s_next = max(floor_s, float(s_meas) - step_m)
+            goal = (
+                float(p_hat[0] - s_next * axis[0]),
+                float(p_hat[1] - s_next * axis[1]),
+                float(p_hat[2] - s_next * axis[2]),
+            )
+            sol = ik.ik_position(
+                goal[0],
+                goal[1],
+                goal[2],
+                float(q_model.get("wrist_roll", 0.0)),
+                seed=q_model,
+                tool=float(self.nexarm_tcp_m),
+                pitch_pref=pitch,
+                avoid_create3=True,
+            )
+            if sol is None:
+                self.get_logger().warn(
+                    f"nexarm in-gripper: IK fail at s={s_next:.3f} — hold"
+                )
+                if not self._nexarm_edge_confirmed:
+                    return cur, "front_miss"
+                return cur, "front"
+            q_cmd = self._nexarm_q_list(ik.model_to_real_q(sol))
+            if not self._ik_solution_ok(q_cmd, final_approach=True):
+                self.get_logger().info(
+                    f"nexarm in-gripper: gated at s={s_next:.3f} — hold"
+                )
+                if not self._nexarm_edge_confirmed:
+                    return cur, "front_miss"
+                return cur, "front"
+            old_dur = self.seg_dur
+            self.seg_dur = max(0.45, min(0.80, old_dur))
+            try:
+                ok = self._send_trajectory([q_cmd], gen)
+            finally:
+                self.seg_dur = old_dur
+            if not ok:
+                if not self._nexarm_edge_confirmed:
+                    return cur, "front_miss"
+                return cur, "front"
+            for n, v in zip(self.arm_joints, q_cmd):
+                self._joint_pos[n] = float(v)
+            cur = self._nexarm_ee_from_joints(
+                ik, {n: float(v) for n, v in zip(self.arm_joints, q_cmd)}
+            )
+            self._publish_status(
+                "grasping",
+                f"NexArm into jaws s={s_next:.2f}m",
+                goal,
+            )
+        if not self._nexarm_edge_confirmed:
+            self.get_logger().info(
+                "nexarm in-gripper: max steps without mouth depth — "
+                "hold open (no pinch)"
+            )
+            return cur, "front_miss"
+        self.get_logger().info(
+            "nexarm in-gripper: max steps — hold open (no pinch)"
+        )
+        return cur, "front"
+
+    def _nexarm_center_at_front(
+        self,
+        ik,
+        gen: int,
+        p_hat: Tuple[float, float, float],
+        tip_aim: Tuple[float, float, float],
+        pitch: float,
+        pan: float,
+        snap: dict,
+        ee: Tuple[float, float, float],
+        front_s: float,
+        uv_u: Optional[float] = None,
+        uv_v: Optional[float] = None,
+        max_iters: Optional[int] = None,
+    ) -> Tuple[Tuple[float, float, float], str]:
+        """Nudge laterally so the click sits on the D435i crosshair; hold range.
+
+        Keeps Create3/payload/column gates on. Never inserts past front_s.
+        At very short holds (≲8 cm) the wrist cam sees mostly jaws/near-field
+        and IBVS diverges — seat on the approach axis + jaw bias only.
+        """
+        gain = float(self.nexarm_xy_gain)
+        max_step = 0.012
+        uv_u0 = float(self.nexarm_front_uv_u if uv_u is None else uv_u)
+        uv_v0 = float(self.nexarm_front_uv_v if uv_v is None else uv_v)
+        jaw_bias = float(self.nexarm_front_jaw_bias_m)
+        cur = [float(ee[0]), float(ee[1]), float(ee[2])]
+        skip_ibvs = float(front_s) < 0.08
+        if skip_ibvs:
+            self.get_logger().info(
+                f"nexarm front center: skip IBVS at front_s={front_s:.3f} "
+                f"(near-field) — axis seat + jaw bias"
+            )
+            if not self._is_cancelled(gen) and self._nexarm_wait_sensors(gen, 0.15):
+                q_real = {
+                    n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints
+                }
+                q_model = ik.real_to_model_q(q_real)
+                yaw = math.atan2(float(p_hat[1]), float(p_hat[0]))
+                axis = ik.approach_axis(pitch, yaw)
+                tip_aim = (
+                    float(p_hat[0] - front_s * axis[0]),
+                    float(p_hat[1] - front_s * axis[1]),
+                    float(p_hat[2] - front_s * axis[2]),
+                )
+                sol = ik.ik_position(
+                    tip_aim[0],
+                    tip_aim[1],
+                    tip_aim[2],
+                    float(q_model.get("wrist_roll", 0.0)),
+                    seed=q_model,
+                    tool=float(self.nexarm_tcp_m),
+                    pitch_pref=pitch,
+                    avoid_create3=True,
+                )
+                if sol is not None:
+                    q_cmd = self._nexarm_q_list(ik.model_to_real_q(sol))
+                    if self._ik_solution_ok(q_cmd, final_approach=True):
+                        old_dur = self.seg_dur
+                        self.seg_dur = max(0.45, min(1.0, old_dur))
+                        try:
+                            ok = self._send_trajectory([q_cmd], gen)
+                        finally:
+                            self.seg_dur = old_dur
+                        if ok:
+                            for n, v in zip(self.arm_joints, q_cmd):
+                                self._joint_pos[n] = float(v)
+                            cur = list(
+                                self._nexarm_ee_from_joints(
+                                    ik,
+                                    {
+                                        n: float(v)
+                                        for n, v in zip(self.arm_joints, q_cmd)
+                                    },
+                                )
+                            )
+        prev_uv_err = None
+        worse_count = 0
+        n_center = (
+            int(self.nexarm_front_center_iters)
+            if max_iters is None
+            else max(0, int(max_iters))
+        )
+        for i in range(0 if skip_ibvs else n_center):
+            if self._is_cancelled(gen):
+                return tuple(cur), "cancelled"
+            if not self._nexarm_wait_sensors(gen, 0.25):
+                return tuple(cur), "cancelled"
+            q_real = {n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints}
+            q_model = ik.real_to_model_q(q_real)
+            yaw = math.atan2(float(p_hat[1]), float(p_hat[0]))
+            axis = ik.approach_axis(pitch, yaw)
+            tip_aim = (
+                float(p_hat[0] - front_s * axis[0]),
+                float(p_hat[1] - front_s * axis[1]),
+                float(p_hat[2] - front_s * axis[2]),
+            )
+            pred = ik.project_optical(
+                *ik.camera_pose_q(q_model, pan),
+                p_hat,
+                fx=float(snap.get("fx", 610.0)),
+                fy=float(snap.get("fy", 610.0)),
+                cx=float(snap.get("cx", 320.0)),
+                cy=float(snap.get("cy", 240.0)),
+                width=float(snap.get("width", 640.0)),
+                height=float(snap.get("height", 480.0)),
+            )
+            use_ibvs = True
+            meas = self._nexarm_measure_target(p_hat, q_model, pan, snap)
+            if meas is not None and meas[1] == "depth":
+                _m_xyz, _src, uvz = meas
+                du = float(uvz[0]) - uv_u0
+                dv = float(uvz[1]) - uv_v0
+                self.get_logger().info(
+                    f"nexarm front center {i + 1}: depth "
+                    f"uv=({uvz[0]:.2f},{uvz[1]:.2f}) z={uvz[2]:.3f} "
+                    f"tgt=({uv_u0:.2f},{uv_v0:.2f})"
+                )
+                if abs(du) < 0.025 and abs(dv) < 0.03:
+                    break
+                # At the hold pose, do not walk the 3-D target estimate:
+                # directly servo the measured image feature to the crosshair.
+                pred = (
+                    float(uvz[0]),
+                    float(uvz[1]),
+                    float(uvz[2]),
+                )
+            if use_ibvs:
+                if pred is None:
+                    self.get_logger().warn(
+                        f"nexarm front center {i + 1}: no measure/pred — hold"
+                    )
+                    break
+                du = float(pred[0]) - uv_u0
+                dv = float(pred[1]) - uv_v0
+                if uv_u is not None and not (
+                    -0.02 <= float(pred[0]) <= 1.02
+                    and -0.02 <= float(pred[1]) <= 1.02
+                ):
+                    self.get_logger().info(
+                        f"nexarm front center {i + 1}: uv off-image "
+                        f"({pred[0]:.2f},{pred[1]:.2f}) — stop align"
+                    )
+                    break
+                if abs(du) < 0.025 and abs(dv) < 0.03:
+                    self.get_logger().info(
+                        f"nexarm front center {i + 1}: uv ok "
+                        f"({pred[0]:.2f},{pred[1]:.2f}) "
+                        f"tgt=({uv_u0:.2f},{uv_v0:.2f})"
+                    )
+                    break
+                _orig, R_opt = ik.camera_pose_q(q_model, pan)
+                right = (R_opt[0][0], R_opt[1][0], R_opt[2][0])
+                down = (R_opt[0][1], R_opt[1][1], R_opt[2][1])
+                fwd = (R_opt[0][2], R_opt[1][2], R_opt[2][2])
+                # Feature right of target UV → translate camera +right.
+                # Reject only along camera forward so pitched approach still
+                # leaves a full image-plane step (rejecting approach_axis was
+                # zeroing most of the correction).
+                scale = max(0.08, min(0.28, float(pred[2]))) * 0.70
+                move = (
+                    scale * (du * right[0] + dv * down[0]),
+                    scale * (du * right[1] + dv * down[1]),
+                    scale * (du * right[2] + dv * down[2]),
+                )
+                dot = move[0] * fwd[0] + move[1] * fwd[1] + move[2] * fwd[2]
+                lat = (
+                    move[0] - dot * fwd[0],
+                    move[1] - dot * fwd[1],
+                    move[2] - dot * fwd[2],
+                )
+                ln = math.sqrt(sum(a * a for a in lat))
+                if ln > max_step and ln > 1e-6:
+                    lat = (
+                        max_step * lat[0] / ln,
+                        max_step * lat[1] / ln,
+                        max_step * lat[2] / ln,
+                    )
+                # Slide tip in the camera image plane, then re-seat range
+                # along approach so we stay at front_s from p_hat.
+                tip_shift = (
+                    float(cur[0] + lat[0]),
+                    float(cur[1] + lat[1]),
+                    float(cur[2] + lat[2]),
+                )
+                # Project tip_shift onto the front_s sphere around p_hat
+                # along the current approach direction from tip to p_hat.
+                to_tgt = (
+                    p_hat[0] - tip_shift[0],
+                    p_hat[1] - tip_shift[1],
+                    p_hat[2] - tip_shift[2],
+                )
+                tn = math.sqrt(sum(a * a for a in to_tgt))
+                if tn > 1e-6:
+                    tip_aim = (
+                        float(p_hat[0] - front_s * to_tgt[0] / tn),
+                        float(p_hat[1] - front_s * to_tgt[1] / tn),
+                        float(p_hat[2] - front_s * to_tgt[2] / tn),
+                    )
+                else:
+                    tip_aim = tip_shift
+                self.get_logger().info(
+                    f"nexarm front center {i + 1}: ibvs "
+                    f"uv=({pred[0]:.2f},{pred[1]:.2f}) "
+                    f"tgt=({uv_u0:.2f},{uv_v0:.2f}) "
+                    f"dlat=({lat[0]:.3f},{lat[1]:.3f},{lat[2]:.3f}) ln={ln:.3f}"
+                )
+                uv_err = abs(du) + abs(dv)
+                if prev_uv_err is not None and uv_err > prev_uv_err + 0.02:
+                    worse_count += 1
+                    if worse_count >= 2:
+                        self.get_logger().warn(
+                            f"nexarm front center: IBVS diverging "
+                            f"err={uv_err:.2f} — stop + jaw bias"
+                        )
+                        break
+                else:
+                    worse_count = 0
+                prev_uv_err = uv_err
+            dlt = (
+                tip_aim[0] - cur[0],
+                tip_aim[1] - cur[1],
+                tip_aim[2] - cur[2],
+            )
+            dn = math.sqrt(sum(a * a for a in dlt))
+            if dn > max_step and dn > 1e-6:
+                tip_aim = (
+                    cur[0] + max_step * dlt[0] / dn,
+                    cur[1] + max_step * dlt[1] / dn,
+                    cur[2] + max_step * dlt[2] / dn,
+                )
+            sol = ik.ik_position(
+                tip_aim[0],
+                tip_aim[1],
+                tip_aim[2],
+                float(q_model.get("wrist_roll", 0.0)),
+                seed=q_model,
+                tool=float(self.nexarm_tcp_m),
+                pitch_pref=pitch,
+                avoid_create3=True,
+            )
+            if sol is None:
+                break
+            q_cmd = self._nexarm_q_list(ik.model_to_real_q(sol))
+            # Front square-up is already short of the click — relax column
+            # keep-out so small lateral IBVS nudges are not blocked.
+            if not self._ik_solution_ok(q_cmd, final_approach=True):
+                self.get_logger().warn("nexarm front center gated — hold")
+                break
+            old_dur = self.seg_dur
+            self.seg_dur = max(0.45, min(1.0, old_dur))
+            try:
+                ok = self._send_trajectory([q_cmd], gen)
+            finally:
+                self.seg_dur = old_dur
+            if not ok:
+                break
+            for n, v in zip(self.arm_joints, q_cmd):
+                self._joint_pos[n] = float(v)
+            cur = list(
+                self._nexarm_ee_from_joints(
+                    ik, {n: float(v) for n, v in zip(self.arm_joints, q_cmd)}
+                )
+            )
+        # Final jaw-centerline bias: D435i is off the mouth; shift tip so the
+        # open jaws (not the optical axis) sit on p_hat at front_s.
+        if jaw_bias > 1e-4 and not self._is_cancelled(gen):
+            q_real = {n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints}
+            q_model = ik.real_to_model_q(q_real)
+            _orig, R_opt = ik.camera_pose_q(q_model, pan)
+            right = (R_opt[0][0], R_opt[1][0], R_opt[2][0])
+            # Positive bias moves tip opposite camera-right (mouth left of
+            # optical axis → cancels "jaws right of target" with centered UV).
+            tip_shift = (
+                float(cur[0] - jaw_bias * right[0]),
+                float(cur[1] - jaw_bias * right[1]),
+                float(cur[2] - jaw_bias * right[2]),
+            )
+            to_tgt = (
+                p_hat[0] - tip_shift[0],
+                p_hat[1] - tip_shift[1],
+                p_hat[2] - tip_shift[2],
+            )
+            tn = math.sqrt(sum(a * a for a in to_tgt))
+            if tn > 1e-6:
+                tip_aim = (
+                    float(p_hat[0] - front_s * to_tgt[0] / tn),
+                    float(p_hat[1] - front_s * to_tgt[1] / tn),
+                    float(p_hat[2] - front_s * to_tgt[2] / tn),
+                )
+                sol = ik.ik_position(
+                    tip_aim[0],
+                    tip_aim[1],
+                    tip_aim[2],
+                    float(q_model.get("wrist_roll", 0.0)),
+                    seed=q_model,
+                    tool=float(self.nexarm_tcp_m),
+                    pitch_pref=pitch,
+                    avoid_create3=True,
+                )
+                if sol is not None:
+                    q_cmd = self._nexarm_q_list(ik.model_to_real_q(sol))
+                    if self._ik_solution_ok(q_cmd, final_approach=True):
+                        old_dur = self.seg_dur
+                        self.seg_dur = max(0.45, min(1.0, old_dur))
+                        try:
+                            ok = self._send_trajectory([q_cmd], gen)
+                        finally:
+                            self.seg_dur = old_dur
+                        if ok:
+                            for n, v in zip(self.arm_joints, q_cmd):
+                                self._joint_pos[n] = float(v)
+                            cur = list(
+                                self._nexarm_ee_from_joints(
+                                    ik,
+                                    {
+                                        n: float(v)
+                                        for n, v in zip(self.arm_joints, q_cmd)
+                                    },
+                                )
+                            )
+                            self.get_logger().info(
+                                f"nexarm front jaw bias {jaw_bias:.3f}m "
+                                f"ee=({cur[0]:.3f},{cur[1]:.3f},{cur[2]:.3f})"
+                            )
+        # Authoritative final UV audit from fresh aligned depth.
+        if not self._is_cancelled(gen) and self._nexarm_wait_sensors(gen, 0.20):
+            q_real = {
+                n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints
+            }
+            q_model = ik.real_to_model_q(q_real)
+            final_meas = self._nexarm_measure_target(p_hat, q_model, pan, snap)
+            if final_meas is not None:
+                _m_xyz, src, uvz = final_meas
+                self.get_logger().info(
+                    f"nexarm front final uv=({uvz[0]:.2f},{uvz[1]:.2f}) "
+                    f"z={uvz[2]:.3f} src={src} "
+                    f"tgt=({uv_u0:.2f},{uv_v0:.2f})"
+                )
+        return tuple(cur), "front"
 
     def _d435i_cube_servo(
         self,
@@ -3758,8 +6581,33 @@ class GraspFromClick(Node):
             )
         return tuple(cur), "done"
 
-    def _js_cb(self, msg: JointState):
+    def _nexarm_js_cb(self, msg: JointState):
+        """NexArm arm + gripper from GUI USB (/grab_it/nexarm_joint_states)."""
         for name, pos in zip(msg.name, msg.position):
+            p = float(pos)
+            if name in self._joint_pos:
+                self._joint_pos[name] = p
+            if name == "left_finger":
+                self._left_finger = p
+            if name == "gripper":
+                self._gripper_joint = p
+                last_cmd = self._last_grip_joint
+                if (
+                    last_cmd is not None
+                    and abs(p - float(last_cmd)) <= 1e-6
+                ):
+                    continue
+                self._gripper_meas = p
+                self._gripper_meas_t = time.monotonic()
+
+    def _js_cb(self, msg: JointState):
+        names = list(msg.name)
+        # Pan-only xs_sdk publishes name=["pan"]. Ignore other publishers on
+        # this topic so a stale mirror cannot freeze the measured pan angle.
+        pan_only = names == ["pan"]
+        if getattr(self, "_nexarm", False) and not pan_only:
+            return
+        for name, pos in zip(names, msg.position):
             p = float(pos)
             # xs_sdk publishes ~-pi when Dynamixel syncRead fails
             if abs(p + math.pi) <= 0.05:
@@ -3772,6 +6620,15 @@ class GraspFromClick(Node):
                 self._left_finger = p
             if name == "gripper":
                 self._gripper_joint = p
+                # Drop exact echoes of the last joint we commanded (GUI bus).
+                last_cmd = self._last_grip_joint
+                if (
+                    last_cmd is not None
+                    and abs(p - float(last_cmd)) <= 1e-6
+                ):
+                    continue
+                self._gripper_meas = p
+                self._gripper_meas_t = time.monotonic()
         # Topic arriving = bus is up, even if this sample was -pi.
         self._js_ok_stamp = time.monotonic()
 
@@ -3792,6 +6649,14 @@ class GraspFromClick(Node):
         if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
             self._publish_status("error", "Click outside image")
             return
+        # Never re-resolve UV→xyz while a grasp is moving: the wrist camera
+        # has already moved, so the same image UV falls onto the table/box
+        # and the arm would chase that sinking 3D point downward.
+        if self._busy:
+            self.get_logger().warn(
+                "ignoring grasp_click while busy — goal is frozen in base frame"
+            )
+            return
         try:
             cid = int(data.get("click_id"))
         except (TypeError, ValueError):
@@ -3807,6 +6672,388 @@ class GraspFromClick(Node):
             name="grasp_click",
         ).start()
 
+    def _ws_dir(self) -> Path:
+        env = os.environ.get("GRAB_IT_GRASP_PARAMS", "")
+        if env:
+            return Path(env).resolve().parent.parent
+        return Path("/workspaces/isaac_ros-dev")
+
+    def _with_tf(self, fn):
+        """Run a TF lookup without enabling a blocking wait.
+
+        A timed lookup_transform from a worker thread holds the rcl lock the
+        executor needs, and the node stops spinning. Clicks and floor measures
+        use the transform already in the buffer.
+        """
+        return fn()
+
+    def _tf_floor_pose(self) -> Tuple[float, float, float]:
+        """(x, y, z) of base_footprint in the arm planning frame."""
+
+        def _lookup():
+            for frame in (
+                "base_footprint",
+                "px150_no_elbow/base_footprint",
+                "create3/base_footprint",
+            ):
+                T = self._tf_matrix(self.planning_frame, frame)
+                if T is not None:
+                    return (
+                        float(T[0, 3]),
+                        float(T[1, 3]),
+                        float(T[2, 3]),
+                    )
+            return None
+
+        got = self._with_tf(_lookup)
+        if got is None:
+            got = (-0.06, 0.0, -0.096)
+        self._floor_z_cache = float(got[2])
+        self.ws_min[2] = float(got[2]) + 0.01
+        return got
+
+    def _arm_link_centers(self) -> np.ndarray:
+        names = [
+            "base_link",
+            "shoulder_link",
+            "forearm_link",
+            "wrist_link",
+            "ee_arm_link",
+            "ee_gripper_link",
+            "gripper_link",
+            "left_finger_link",
+            "right_finger_link",
+        ]
+        prefix = "px150_no_elbow/"
+
+        def _lookup():
+            centers = []
+            for name in names:
+                T = self._tf_matrix(self.planning_frame, prefix + name)
+                if T is not None:
+                    centers.append(T[:3, 3])
+            if not centers:
+                return np.zeros((0, 3), dtype=np.float64)
+            return np.vstack(centers)
+
+        return self._with_tf(_lookup)
+
+    def _click_cloud(self, u_norm: float, v_norm: float, img_w, img_h, radius: int = 96):
+        """Depth samples around the click, in the planning frame."""
+        with self._lock:
+            depth = None if self._depth is None else self._depth.copy()
+            info = self._info
+            frame = self._depth_frame or self.camera_frame
+        if depth is None or info is None:
+            return None
+        pix = self._click_k_pixels(u_norm, v_norm, img_w, img_h, info, depth)
+        if pix is None:
+            return None
+        tf = self._with_tf(
+            lambda: self._d435i_planning_T(frame or info.header.frame_id)
+        )
+        if tf is None:
+            return None
+        T, _used = tf
+        fx, fy = float(info.k[0]), float(info.k[4])
+        cx, cy = float(info.k[2]), float(info.k[5])
+        if fx < 1.0 or fy < 1.0:
+            return None
+        h, w = depth.shape[:2]
+        u_d, v_d = self._depth_sample_uv(int(pix[0]), int(pix[1]), info, depth)
+        rad = int(radius)
+        pts = []
+        pxs = []
+        for vv in range(max(0, v_d - rad), min(h, v_d + rad + 1), 3):
+            for uu in range(max(0, u_d - rad), min(w, u_d + rad + 1), 3):
+                z = float(depth[vv, uu])
+                if not (np.isfinite(z) and self.min_depth < z < self.max_depth):
+                    continue
+                if int(info.width or w) != w or int(info.height or h) != h:
+                    ku = uu * (int(info.width) - 1) / max(1, w - 1)
+                    kv = vv * (int(info.height) - 1) / max(1, h - 1)
+                else:
+                    ku, kv = float(uu), float(vv)
+                ray = np.array([(ku - cx) / fx, (kv - cy) / fy, 1.0])
+                p = T[:3, 3] + z * (T[:3, :3] @ ray)
+                pts.append(p)
+                pxs.append((ku, kv))
+        if not pts:
+            points = np.zeros((0, 3), dtype=np.float64)
+            pixels = np.zeros((0, 2), dtype=np.float64)
+        else:
+            points = np.vstack(pts)
+            pixels = np.asarray(pxs, dtype=np.float64)
+        ray = self._optical_ray_unnorm(float(pix[0]), float(pix[1]), info)
+        if ray is None:
+            return None
+        direction = T[:3, :3] @ np.asarray(ray, dtype=np.float64)
+        foot = self._tf_floor_pose()
+        centers = self._arm_link_centers()
+        robot = _floor_mod().point_on_robot(
+            points,
+            centers,
+            0.08,
+            (foot[0], foot[1]),
+            0.175,
+            foot[2] + 0.20,
+        )
+        return {
+            "depth": depth,
+            "info": info,
+            "T": T,
+            "origin": np.asarray(T[:3, 3], dtype=np.float64),
+            "direction": direction,
+            "points": points,
+            "pixels": pixels,
+            "click_px": (float(pix[0]), float(pix[1])),
+            "robot": robot,
+            "floor_z": float(foot[2]),
+            "foot": foot,
+        }
+
+    def _save_click_record(self, cloud: dict, resolved: dict) -> None:
+        try:
+            out = Path("/tmp/grabit_session/clicks")
+            out.mkdir(parents=True, exist_ok=True)
+            stamp = int(time.time() * 1000)
+            meta = {
+                "floor_z": cloud["floor_z"],
+                "table_z": float(self.table_z),
+                "default_height": float(self.floor_object_default_height),
+                "resolved": {
+                    "kind": resolved.get("kind"),
+                    "assumed": bool(resolved.get("assumed")),
+                    "xyz": resolved.get("xyz"),
+                    "warn": resolved.get("warn") or "",
+                },
+            }
+            np.savez_compressed(
+                out / f"{stamp}.npz",
+                origin=cloud["origin"],
+                direction=cloud["direction"],
+                points=cloud["points"],
+                pixels=cloud["pixels"],
+                robot=cloud["robot"],
+                click_px=np.array(cloud["click_px"], dtype=np.float64),
+                T=cloud["T"],
+                meta=json.dumps(meta),
+            )
+        except Exception as e:
+            self.get_logger().warn(f"click record: {e}")
+
+    def _floor_ring_cell(self, u_px, v_px, info, R, origin, floor_z: float) -> int:
+        """1 when this pixel's ray hits the reachable floor ring."""
+        ray = self._optical_ray_unnorm(float(u_px), float(v_px), info)
+        if ray is None:
+            return 0
+        direction = R @ np.asarray(ray, dtype=np.float64)
+        hit = _floor_mod().ray_hit_z(np.asarray(origin, dtype=np.float64), direction, floor_z)
+        if hit is None:
+            return 0
+        xyz = (float(hit[0]), float(hit[1]), float(hit[2]))
+        if getattr(self, "_nexarm", False):
+            return 1 if self._xyz_grasp_reachable(xyz) else 0
+        heights = (self._floor_reach or {}).get("heights") or []
+        if not heights:
+            return 0
+        if _floor_mod().reach_delta_m(xyz, heights) is not None:
+            return 0
+        return 1 if self._xyz_grasp_reachable(xyz) else 0
+
+    def _reach_phrase(self, xyz: Tuple[float, float, float]) -> Optional[str]:
+        if getattr(self, "_nexarm", False):
+            # floor_reach.yaml is the PX150 ring (about 22 cm at this height).
+            horiz = math.hypot(float(xyz[0]), float(xyz[1]))
+            extra = horiz - float(self.max_reach)
+            if extra <= 0.01:
+                return None
+            return f"drive {max(1, int(round(extra * 100.0)))} cm closer"
+        heights = (self._floor_reach or {}).get("heights") or []
+        got = _floor_mod().reach_delta_m(xyz, heights)
+        if got is None:
+            return None
+        which, metres = got
+        cm = max(1, int(round(metres * 100.0)))
+        if which == "closer":
+            return f"drive {cm} cm closer"
+        return f"back up {cm} cm"
+
+    def _resolve_floor_click(self, u: float, v: float, img_w, img_h):
+        cloud = self._click_cloud(u, v, img_w, img_h)
+        if cloud is None:
+            return None, None
+        resolved = _floor_mod().resolve_floor_click(
+            origin=cloud["origin"],
+            direction=cloud["direction"],
+            points=cloud["points"],
+            pixels=cloud["pixels"],
+            click_px=cloud["click_px"],
+            robot=cloud["robot"],
+            floor_z=cloud["floor_z"],
+            table_z=float(self.table_z),
+            default_height=float(self.floor_object_default_height),
+        )
+        self._save_click_record(cloud, resolved)
+        return resolved, cloud
+
+    def _measure_floor(self) -> None:
+        self.get_logger().info("measure_floor begin")
+        was = self._clicking
+        self._clicking = True
+        try:
+            self._measure_floor_body()
+        except Exception as e:
+            self.get_logger().error(f"measure_floor failed: {e}")
+        finally:
+            self._clicking = was
+
+    def _measure_floor_body(self) -> None:
+        with self._lock:
+            have = self._depth is not None
+        if not have:
+            self._snapshot_depth()
+        cloud = self._click_cloud(0.5, 0.85, None, None, radius=240)
+        n_pts = 0 if cloud is None else int(cloud["points"].shape[0])
+        if cloud is None or n_pts < 50:
+            self._publish_status("error", "Floor measure needs a depth view of the floor")
+            return
+        keep = ~np.asarray(cloud["robot"], dtype=bool)
+        arm_pts = np.asarray(cloud["points"], dtype=np.float64)[keep]
+        if arm_pts.shape[0] < 50:
+            self._publish_status("error", "Floor measure needs a depth view of the floor")
+            return
+        # Fit in the optical frame, same as cam_pitch_from_floor.py. A mount
+        # error tilts the floor in the arm frame, so requiring a level plane
+        # there throws the real floor away.
+        R = np.asarray(cloud["T"][:3, :3], dtype=np.float64)
+        origin = np.asarray(cloud["origin"], dtype=np.float64)
+        opt = (arm_pts - origin) @ R
+        mean = opt.mean(axis=0)
+        mod = _floor_mod()
+        foot = cloud["foot"]
+        look = R[:, 2]
+        tf_tilt = math.degrees(
+            math.atan2(-float(look[2]), math.hypot(float(look[0]), float(look[1])))
+        )
+        cam_x = R[:, 0]
+        tf_roll = math.degrees(
+            math.atan2(float(cam_x[2]), math.hypot(float(cam_x[0]), float(cam_x[1])))
+        )
+        chosen = None
+        closest = None
+        for seed in range(6):
+            fit = mod.fit_plane_ransac(opt, rng=np.random.default_rng(seed))
+            if fit is None:
+                continue
+            nrm, d, n_in = fit
+            if (
+                float(nrm[0]) * float(mean[0])
+                + float(nrm[1]) * float(mean[1])
+                + float(nrm[2]) * float(mean[2])
+                > 0.0
+            ):
+                nrm = -nrm
+                d = -float(d)
+            facing = max(
+                -1.0,
+                min(
+                    1.0,
+                    float(nrm[0]) * 0.0 + float(nrm[1]) * 0.0 + float(nrm[2]),
+                ),
+            )
+            measured = math.degrees(math.acos(facing)) - 90.0
+            n_arm = R @ np.asarray(nrm, dtype=np.float64)
+            nz = float(n_arm[2])
+            tilt_err = abs(measured - tf_tilt)
+            if closest is None or tilt_err < closest[0]:
+                closest = (tilt_err, measured)
+            if abs(nz) < 0.7 or n_in < 0.25 * arm_pts.shape[0]:
+                continue
+            if chosen is None or n_in > chosen[0]:
+                chosen = (n_in, nrm, float(d), n_arm, measured)
+        if chosen is None:
+            extra = ""
+            if closest is not None:
+                extra = f" (closest tilt {closest[1]:.1f}°, TF {tf_tilt:.1f}°)"
+            self.get_logger().error("measure_floor: plane is not a floor" + extra)
+            self._publish_status("error", "Floor plane is not horizontal")
+            return
+        n_in, nrm, d, n_arm, measured = chosen
+        d_arm = float(d) - (
+            float(n_arm[0]) * float(origin[0])
+            + float(n_arm[1]) * float(origin[1])
+            + float(n_arm[2]) * float(origin[2])
+        )
+        nz = float(n_arm[2])
+        measured_roll = math.degrees(
+            math.atan2(float(nrm[0]), math.hypot(float(nrm[1]), float(nrm[2])))
+        )
+        z_at = float(
+            (-(float(n_arm[0]) * foot[0] + float(n_arm[1]) * foot[1] + d_arm)) / nz
+        )
+        cam_h = abs(float(d))
+        msg = (
+            f"floor z={z_at:.3f} m (TF {foot[2]:.3f}), "
+            f"camera {cam_h:.3f} m above plane, "
+            f"tilt {measured:.1f}° (TF {tf_tilt:.1f}°), "
+            f"roll {measured_roll:.1f}° (TF {tf_roll:.1f}°), "
+            f"inliers {n_in}/{arm_pts.shape[0]}"
+        )
+        if abs(z_at - foot[2]) > 0.015:
+            msg += " — plane and TF differ by more than 1.5 cm"
+        self.get_logger().info(msg)
+        self._publish_status("point", msg)
+
+    def _save_cal_tip(self, data: dict, u: float, v: float) -> None:
+        """Joystick tip on a landmark, then a Calibration-tab click on the jaws."""
+        self._snapshot_depth()
+        try:
+            img_w = int(data.get("width") or 0)
+            img_h = int(data.get("height") or 0)
+        except (TypeError, ValueError):
+            img_w = img_h = 0
+        cloud = self._click_cloud(u, v, img_w, img_h)
+        tip = self._with_tf(self._ee_xyz)
+        if cloud is None or tip is None:
+            self._publish_status("error", "Tip sample needs depth, camera TF, and the gripper")
+            return
+        info = cloud["info"]
+        joints = [float(self._joint_pos.get(j, float("nan"))) for j in self.arm_joints]
+        pan = float(self._pan_pos) if self._pan_pos is not None else float("nan")
+        # Depth at the clicked pixel, if any.
+        click = cloud["click_px"]
+        depth_m = None
+        if cloud["points"].shape[0]:
+            duv = np.linalg.norm(cloud["pixels"] - np.array(click), axis=1)
+            if duv.size and float(duv.min()) <= 2.0:
+                i = int(np.argmin(duv))
+                depth_m = float(
+                    np.linalg.norm(cloud["points"][i] - cloud["origin"])
+                )
+        row = {
+            "u_px": float(click[0]),
+            "v_px": float(click[1]),
+            "u_norm": float(u),
+            "v_norm": float(v),
+            "pan": pan,
+            "joints": joints,
+            "truth_xyz": [float(tip[0]), float(tip[1]), float(tip[2])],
+            "T_base_optical": cloud["T"].reshape(-1).tolist(),
+            "K": [float(x) for x in info.k],
+            "depth_m": depth_m,
+            "stamp": time.time(),
+        }
+        path = self._ws_dir() / "config" / "calibration" / "floor_tip_cal.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row) + "\n")
+        self.get_logger().info(f"tip sample -> {path}")
+        self._publish_status(
+            "point",
+            f"Saved tip sample ({tip[0]:.3f},{tip[1]:.3f},{tip[2]:.3f}) pan={pan:.2f}",
+        )
+
     def _click_cb_worker(self, data: dict, u: float, v: float, gen: int):
         try:
             if gen != self._click_gen:
@@ -3815,7 +7062,13 @@ class GraspFromClick(Node):
             if cam in ("wide", "wide_cam", "jaw"):
                 self.get_logger().info("ignoring wide-image click — D435i only")
                 return
-            self._d435i_click_cb(data, u, v)
+            if cam in ("cal_tip", "cal_tip_click"):
+                self._save_cal_tip(data, u, v)
+                return
+            if cam == "measure_floor":
+                self._measure_floor()
+                return
+            self._d435i_click_cb(data, u, v, gen)
         except Exception as e:
             self.get_logger().warn(f"click worker: {e}")
             self._publish_status("error", f"Click failed: {e}")
@@ -3823,7 +7076,199 @@ class GraspFromClick(Node):
             if gen == self._click_gen:
                 self._clicking = False
 
-    def _d435i_click_cb(self, data: dict, u: float, v: float):
+    def _nexarm_click_target(
+        self, u: float, v: float, img_w: int = 0, img_h: int = 0
+    ) -> Optional[Tuple[float, float, float]]:
+        """Unproject the click with the FK camera pose at click time.
+
+        RSP TF can lag the real joints when the bridge is stale; FK from the
+        live NexArm joints is the authoritative optical pose for planning.
+        """
+        self._snapshot_depth()
+        with self._lock:
+            depth = None if self._depth is None else self._depth.copy()
+            info = self._info
+            frame = self._depth_frame or self.camera_frame
+        if depth is None or info is None:
+            self._publish_status("error", "No D435i depth for NexArm click")
+            return None
+        try:
+            click_w = int(img_w) if img_w else 0
+            click_h = int(img_h) if img_h else 0
+        except (TypeError, ValueError):
+            click_w = click_h = 0
+        h, w = depth.shape[:2]
+        if click_w >= 32 and click_h >= 32:
+            w_u, h_u = click_w, click_h
+        else:
+            w_u, h_u = w, h
+        u_px = int(round(float(u) * max(1, w_u - 1)))
+        v_px = int(round(float(v) * max(1, h_u - 1)))
+        info_w = int(info.width) if info.width else w
+        info_h = int(info.height) if info.height else h
+        if info_w > 1 and info_h > 1 and (info_w != w_u or info_h != h_u):
+            u_px = int(round(u_px * (info_w - 1) / max(1, w_u - 1)))
+            v_px = int(round(v_px * (info_h - 1) / max(1, h_u - 1)))
+        # Map into the depth image grid when K size != depth size.
+        if info_w > 1 and info_h > 1 and (info_w != w or info_h != h):
+            u_d = int(round(u_px * (w - 1) / max(1, info_w - 1)))
+            v_d = int(round(v_px * (h - 1) / max(1, info_h - 1)))
+        else:
+            u_d, v_d = u_px, v_px
+        u_d = max(0, min(w - 1, u_d))
+        v_d = max(0, min(h - 1, v_d))
+        z_m = self._near_depth(depth, u_d, v_d)
+        if z_m is None:
+            # Median patch fallback (same as _resolve_via_depth NexArm path).
+            half = max(1, int(self.depth_window) // 2)
+            y0, y1 = max(0, v_d - half), min(h, v_d + half + 1)
+            x0, x1 = max(0, u_d - half), min(w, u_d + half + 1)
+            patch = depth[y0:y1, x0:x1].reshape(-1)
+            valid = patch[
+                np.isfinite(patch)
+                & (patch > self.min_depth)
+                & (patch < self.max_depth)
+            ]
+            z_m = float(np.median(valid)) if valid.size else None
+        if z_m is None:
+            self._publish_status("error", "No valid depth at click")
+            return None
+        fx, fy = float(info.k[0]), float(info.k[4])
+        cx, cy = float(info.k[2]), float(info.k[5])
+        if info_w > 1 and info_h > 1 and (info_w != w or info_h != h):
+            sx = (w - 1) / float(info_w - 1)
+            sy = (h - 1) / float(info_h - 1)
+            fx, cx = fx * sx, cx * sx
+            fy, cy = fy * sy, cy * sy
+        if fx == 0.0 or fy == 0.0:
+            self._publish_status("error", "Invalid camera intrinsics")
+            return None
+        pan = (
+            float(self._pan_pos)
+            if self._pan_pos is not None
+            else float(self.nexarm_pan_approach_rad)
+        )
+        q_real = {
+            n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints
+        }
+        ik = self._nexarm_ik_mod()
+        sp = self._stop_plan_api()
+        origin_fk, R_fk = ik.camera_pose_q(ik.real_to_model_q(q_real), pan)
+        xyz = sp.unproject_pixel(
+            u_d, v_d, float(z_m),
+            fx=fx, fy=fy, cx=cx, cy=cy,
+            origin=origin_fk, R_opt=R_fk,
+        )
+        # Health check: FK vs live TF (warn when bridge/RSP is stale).
+        tf_delta_m = float("nan")
+        tf_delta_deg = float("nan")
+        try:
+            ok_tf, xyz_tf, _ = self._resolve_via_depth(
+                u_d, v_d, depth, info, frame or info.header.frame_id
+            )
+            if ok_tf and xyz_tf is not None:
+                tf_delta_m = math.dist(xyz, xyz_tf)
+            T_cam = self._tf_matrix(
+                self.planning_frame,
+                self._tf_camera_frame(frame or self.camera_frame),
+            )
+            if T_cam is not None:
+                o_tf = (
+                    float(T_cam[0, 3]),
+                    float(T_cam[1, 3]),
+                    float(T_cam[2, 3]),
+                )
+                look_fk = (
+                    float(R_fk[0][2]),
+                    float(R_fk[1][2]),
+                    float(R_fk[2][2]),
+                )
+                look_tf = (
+                    float(T_cam[0, 2]),
+                    float(T_cam[1, 2]),
+                    float(T_cam[2, 2]),
+                )
+                cam_d = math.dist(origin_fk, o_tf)
+                dot = max(
+                    -1.0,
+                    min(
+                        1.0,
+                        look_fk[0] * look_tf[0]
+                        + look_fk[1] * look_tf[1]
+                        + look_fk[2] * look_tf[2],
+                    ),
+                )
+                tf_delta_deg = math.degrees(math.acos(dot))
+                if cam_d > 0.02 or tf_delta_deg > 3.0:
+                    self.get_logger().warn(
+                        f"FK vs TF cam Δ={cam_d*100:.1f}cm "
+                        f"∠={tf_delta_deg:.1f}° "
+                        f"(bridge/RSP may be stale)"
+                    )
+                else:
+                    self.get_logger().info(
+                        f"FK vs TF cam Δ={cam_d*100:.1f}cm ∠={tf_delta_deg:.1f}°"
+                    )
+        except Exception as exc:
+            self.get_logger().warn(f"FK vs TF check: {exc}")
+        if not self._viz_plausible(xyz) or not self._in_workspace(xyz):
+            self._publish_status(
+                "unreachable",
+                f"Click ({xyz[0]:.2f},{xyz[1]:.2f},{xyz[2]:.2f}) outside workspace",
+                xyz,
+            )
+            return None
+        obj_kind = "low"
+        if float(xyz[2]) > 0.12:
+            obj_kind = "upright"
+        elif float(xyz[2]) < -0.05:
+            obj_kind = "floor"
+        u_n = float(u_d) / float(max(1, w - 1))
+        v_n = float(v_d) / float(max(1, h - 1))
+        self._nexarm_click_snap = {
+            "q_real": q_real,
+            "pan": pan,
+            "u": u_n,
+            "v": v_n,
+            "u_px": int(u_d),
+            "v_px": int(v_d),
+            "z_m": float(z_m),
+            "xyz": xyz,
+            "obj_kind": obj_kind,
+            "fx": float(fx),
+            "fy": float(fy),
+            "cx": float(cx),
+            "cy": float(cy),
+            "width": float(w),
+            "height": float(h),
+            "cam_origin": tuple(float(v) for v in origin_fk),
+            "cam_R": tuple(tuple(float(c) for c in row) for row in R_fk),
+            "depth": depth.copy(),
+            "method": "depth_fk",
+            "tf_delta_m": float(tf_delta_m),
+            "tf_delta_deg": float(tf_delta_deg),
+        }
+        self._nexarm_color_tmpl = None
+        self._nexarm_plan = None
+        self._nexarm_stop_plan = None
+        self._last_click_uv = (u_n, v_n)
+        self._viz_xyz = xyz
+        self._viz_from_depth = True
+        self._object_centroid = xyz
+        self._object_top_z = float(xyz[2])
+        self._object_low = obj_kind in ("low", "floor")
+        self.get_logger().info(
+            f"nexarm click xyz=({xyz[0]:.3f},{xyz[1]:.3f},{xyz[2]:.3f}) "
+            f"depth={float(z_m):.3f} kind={obj_kind} pan={pan:.3f} "
+            f"via=depth_fk cam=({origin_fk[0]:.3f},{origin_fk[1]:.3f},"
+            f"{origin_fk[2]:.3f}) tf_click_Δ="
+            f"{tf_delta_m if math.isfinite(tf_delta_m) else float('nan'):.3f}m"
+        )
+        return xyz
+
+    def _d435i_click_cb(self, data: dict, u: float, v: float, gen: int = 0):
+        if gen and gen != self._click_gen:
+            return
         self._last_click_uv = (u, v)
         self._wrist_face = None
         self._wrist_from_depth = False
@@ -3843,6 +7288,31 @@ class GraspFromClick(Node):
         self._publish_status(
             "planning", "Resolving depth…", skip_overlay=True
         )
+        if getattr(self, "_nexarm", False):
+            try:
+                img_w = int(data.get("width") or 0)
+                img_h = int(data.get("height") or 0)
+            except (TypeError, ValueError):
+                img_w = img_h = 0
+            xyz = self._nexarm_click_target(u, v, img_w, img_h)
+            if xyz is None:
+                return
+            reach = self._reach_phrase(xyz)
+            if reach:
+                self._publish_status("unreachable", f"{reach}", xyz)
+                return
+            kind = "obj"
+            if self._nexarm_click_snap is not None:
+                kind = str(self._nexarm_click_snap.get("obj_kind", "obj"))
+            self._publish_status(
+                "point",
+                f"Target {xyz[0]:.3f}, {xyz[1]:.3f}, {xyz[2]:.3f} m "
+                f"({kind}) — press Grasp",
+                xyz,
+            )
+            self._d435i_pair_xyz = xyz
+            self._d435i_pair_stamp = time.monotonic()
+            return
         self._snapshot_depth()
         feat = self._analyze_click_depth(u, v)
         if feat is not None:
@@ -3864,37 +7334,98 @@ class GraspFromClick(Node):
             img_w = img_h = 0
         how = "pix-depth"
         extra = ""
-        pixel = self._click_ray_point(u, v, img_w, img_h)
-        if pixel is not None:
-            patch = self._object_centroid
+        if gen and gen != self._click_gen:
+            return
+        resolved, _cloud = self._resolve_floor_click(u, v, img_w, img_h)
+        if gen and gen != self._click_gen:
+            return
+        surface = self._grasp_on_floor_surface(feat)
+        measured = (
+            resolved is not None
+            and resolved.get("kind") == "floor"
+            and resolved.get("xyz")
+            and not resolved.get("assumed")
+        )
+        if surface is not None and not measured:
+            xyz = surface
+            self._object_low = True
+            self._object_centroid = xyz
+            self._object_top_z = float(feat["z"])
+            self._viz_xyz = xyz
+            self._viz_from_depth = True
+            reach = self._reach_phrase(xyz)
             self.get_logger().info(
-                f"click pixel ({pixel[0]:.3f},{pixel[1]:.3f},{pixel[2]:.3f}) "
-                f"reach={math.hypot(pixel[0], pixel[1]):.3f} "
-                f"patch={None if patch is None else tuple(round(float(c), 3) for c in patch)}"
+                f"floor surface ({xyz[0]:.3f},{xyz[1]:.3f},{xyz[2]:.3f}) "
+                f"depth_z={float(feat['z']):.3f} {reach or 'in reach'}"
             )
-            self._object_centroid = pixel
-            self._object_top_z = float(pixel[2])
-            if float(pixel[2]) <= float(self.floor_object_max_z):
+            if reach:
+                self._publish_status(
+                    "unreachable",
+                    f"on the floor; {reach}",
+                    xyz,
+                )
+                return
+            self._publish_status(
+                "point",
+                f"Target {xyz[0]:.3f}, {xyz[1]:.3f}, {xyz[2]:.3f} m "
+                "(on the floor) — press Grasp",
+                xyz,
+            )
+            self._d435i_pair_xyz = xyz
+            self._d435i_pair_stamp = time.monotonic()
+            return
+        if resolved is not None and resolved.get("kind") == "floor" and resolved.get("xyz"):
+            # Upright depth blobs (poles) must not be stolen by the floor plane
+            # ray — that yields a far XY on the support and "outside workspace".
+            upright = (
+                feat is not None
+                and not bool(feat.get("low"))
+                and not bool(feat.get("lying"))
+            )
+            if not upright:
+                xyz = tuple(float(c) for c in resolved["xyz"])
+                support = resolved.get("plane_z")
+                if support is not None and not self._viz_plausible(
+                    xyz, support_z=float(support)
+                ):
+                    self._publish_status(
+                        "error", "Floor click is outside the arm workspace", xyz
+                    )
+                    return
                 self._object_low = True
-            else:
-                self._object_low = False
-                self._viz_xyz = pixel
-                self._viz_from_depth = True
-        if self._object_low and self._object_centroid is not None:
-            floored = self._apply_floor_xyz(self._object_centroid)
-            if floored is not None:
-                self._viz_xyz = floored
-                self._viz_from_depth = True
-                how = "floor-depth"
-                extra += (
-                    f" viz=floor ({floored[0]:.2f},{floored[1]:.2f},{floored[2]:.2f})"
+                self._object_centroid = xyz
+                self._object_top_z = (
+                    float(resolved["top_z"])
+                    if resolved.get("top_z") is not None
+                    else float(xyz[2])
                 )
+                self._viz_xyz = xyz
+                self._viz_from_depth = not bool(resolved.get("assumed"))
+                note = "height assumed" if resolved.get("assumed") else "floor"
+                if resolved.get("warn"):
+                    self.get_logger().warn(str(resolved["warn"]))
+                    note += " — " + str(resolved["warn"])
+                reach = self._reach_phrase(xyz)
                 self.get_logger().info(
-                    f"floor click ({floored[0]:.3f},{floored[1]:.3f},{floored[2]:.3f}) "
-                    f"reach={math.hypot(floored[0], floored[1]):.3f} "
-                    f"top={float(self._object_top_z):.3f} v={v:.2f}"
+                    f"floor resolve ({xyz[0]:.3f},{xyz[1]:.3f},{xyz[2]:.3f}) "
+                    f"assumed={bool(resolved.get('assumed'))} {reach or 'in reach'}"
                 )
-        unp = None if self._viz_xyz is not None else self._unproject_d435i_uv(
+                if reach:
+                    self._publish_status("unreachable", f"{note}; {reach}", xyz)
+                    return
+                self._publish_status(
+                    "point",
+                    f"Target {xyz[0]:.3f}, {xyz[1]:.3f}, {xyz[2]:.3f} m ({note}) — press Grasp",
+                    xyz,
+                )
+                self._d435i_pair_xyz = xyz
+                self._d435i_pair_stamp = time.monotonic()
+                return
+            self.get_logger().info(
+                "skip floor resolve — upright depth blob; using pix-depth"
+            )
+        # Table or pole: the pre-floor click path. Floor clicks do not fall through.
+        unp = self._unproject_d435i_uv(
             u, v, img_w, img_h
         )
         if unp is not None:
@@ -4213,11 +7744,6 @@ class GraspFromClick(Node):
                 xyz = (float(xyz[0]) * s, float(xyz[1]) * s, float(xyz[2]))
                 method = f"{method}+farther{bias * 100:.0f}cm"
                 horiz = new_r
-        floor_xyz = self._apply_floor_xyz(xyz)
-        if floor_xyz is not None:
-            xyz = floor_xyz
-            method = f"{method}+floorZ{xyz[2]:.2f}"
-            horiz = math.hypot(xyz[0], xyz[1])
         if horiz > self.max_reach:
             return (
                 False,
@@ -4237,11 +7763,10 @@ class GraspFromClick(Node):
     def _gripper_is_open(self) -> bool:
         """True if jaws look open enough to receive an object."""
         # left_finger ~0.0115 closed … ~0.0375 open (GUI constants).
-        if self._left_finger is not None:
+        if self._left_finger is not None and not getattr(self, "_nexarm", False):
             return float(self._left_finger) >= 0.028
-        # gripper joint ~-0.95 closed … ~1.65 open.
         if self._gripper_joint is not None:
-            return float(self._gripper_joint) >= 0.40
+            return self._gripper_looks_open(float(self._gripper_joint))
         return False
 
     def _open_gripper_on_point_click(self):
@@ -4320,6 +7845,24 @@ class GraspFromClick(Node):
                 return
         else:
             cmd = raw.lower()
+        if cmd == "measure_floor":
+            self.get_logger().info("measure_floor command")
+            now = time.monotonic()
+            if now < getattr(self, "_measure_floor_until", 0.0):
+                return
+            self._measure_floor_until = now + 3.0
+            if getattr(self, "_measuring_floor", False):
+                return
+            self._measuring_floor = True
+
+            def _go():
+                try:
+                    self._measure_floor()
+                finally:
+                    self._measuring_floor = False
+
+            threading.Thread(target=_go, daemon=True).start()
+            return
         if cmd == "cancel":
             # Free the slot immediately so a new Grasp can start; invalidate
             # the in-flight thread via _run_gen so it exits without actuating.
@@ -4334,6 +7877,17 @@ class GraspFromClick(Node):
                 self._il_cmd_pub.publish(String(data=json.dumps({"cmd": "stop"})))
             self._publish_status("cancelled", "Grasp cancelled — click / Grasp again")
             return
+        if cmd == "obstacle_test":
+            if not getattr(self, "_nexarm", False):
+                self._publish_status("error", "Obstacle test is NexArm only")
+                return
+            gen = self._try_start("Obstacle test already running")
+            if gen is None:
+                return
+            threading.Thread(
+                target=self._run_obstacle_test, args=(gen,), daemon=True
+            ).start()
+            return
         if cmd == "lock_pan":
             self._lock_pan()
             self._publish_status("idle", "Pan locked for grasp")
@@ -4346,6 +7900,80 @@ class GraspFromClick(Node):
                 )
                 return
             self._publish_status("point", "Click held for auto collect", held)
+            return
+        if cmd in ("grasp_plan", "plan"):
+            if not getattr(self, "_nexarm", False):
+                self._publish_status("error", "grasp_plan is NexArm-only")
+                return
+            held = self._click_anchor or self._last_xyz or self._viz_xyz
+            if held is None and self._nexarm_click_snap is None:
+                self._publish_status(
+                    "error", "No target — click the D435i image first"
+                )
+                return
+
+            def _plan_only():
+                # Approach-only: dry-run the stop-pose + clear-path planner.
+                if bool(getattr(self, "nexarm_approach_only", False)):
+                    plan, why = self._build_nexarm_stop_plan(
+                        None if held is None else tuple(held)
+                    )
+                    if plan is None:
+                        self._publish_status(
+                            "unreachable",
+                            f"No stop plan: {why}",
+                            held,
+                        )
+                        return
+                    tip = plan["tip_xyz"]
+                    self.get_logger().info(
+                        f"grasp_plan(stop) s_near={plan['s_near']:.3f} "
+                        f"z=[{plan['z_lo']:.3f},{plan['z_hi']:.3f}] "
+                        f"pre={tuple(round(v, 3) for v in plan['pre_xyz'])} "
+                        f"stop={tuple(round(v, 3) for v in plan['stop_xyz'])} "
+                        f"tip={tuple(round(v, 3) for v in tip)} "
+                        f"gap={plan['gap_m']:.3f} "
+                        f"clear={plan.get('clear')} ({plan.get('clear_msg')})"
+                    )
+                    status = "point" if plan.get("clear") else "error"
+                    self._publish_status(
+                        status,
+                        f"Stop plan s_near={plan['s_near']:.2f} "
+                        f"gap={plan['gap_m']*100:.0f}cm "
+                        f"z={plan['z_app']:.2f} "
+                        f"{'CLEAR' if plan.get('clear') else 'BLOCKED'} "
+                        f"— {'press Grasp' if plan.get('clear') else plan.get('clear_msg')}",
+                        plan["stop_xyz"],
+                    )
+                    return
+                plan = self._nexarm_build_plan(
+                    None if held is None else tuple(held)
+                )
+                if plan is None:
+                    self._publish_status(
+                        "unreachable",
+                        "No feasible NexArm plan for this click",
+                        held,
+                    )
+                    return
+                self.get_logger().info(
+                    f"grasp_plan pitch={plan['pitch_deg']:.0f}° "
+                    f"standoff={plan['standoff']:.3f} "
+                    f"pre={tuple(round(v, 3) for v in plan['pre_xyz'])} "
+                    f"grasp={tuple(round(v, 3) for v in plan['grasp_xyz'])} "
+                    f"uv={tuple(round(v, 3) for v in plan['pred_uv'])} "
+                    f"range={plan['pred_range']:.3f}"
+                )
+                self._publish_status(
+                    "point",
+                    f"Plan OK pitch={plan['pitch_deg']:.0f}° "
+                    f"s={plan['standoff']:.2f}m "
+                    f"uv=({plan['pred_uv'][0]:.2f},{plan['pred_uv'][1]:.2f}) "
+                    f"z={plan['pred_range']:.2f} — press Grasp",
+                    plan["grasp_xyz"],
+                )
+
+            threading.Thread(target=_plan_only, daemon=True).start()
             return
         if cmd == "retreat":
             return_q: Optional[List[float]] = None
@@ -4397,6 +8025,37 @@ class GraspFromClick(Node):
                 target=self._run_set_down, args=(gen,), daemon=True
             ).start()
             return
+        if cmd == "grasp_at" and isinstance(data, dict):
+            try:
+                held = (
+                    float(data["x"]),
+                    float(data["y"]),
+                    float(data["z"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                self._publish_status("error", "grasp_at needs x, y, z")
+                return
+            if not all(math.isfinite(v) for v in held):
+                self._publish_status("error", "grasp_at needs finite x, y, z")
+                return
+            with self._lock:
+                self._last_xyz = held
+                self._viz_xyz = held
+                self._object_low = bool(data.get("low", True))
+                self._click_anchor = None
+                # Keep snap intrinsics; reset pan to approach for replan.
+                if isinstance(self._nexarm_click_snap, dict):
+                    self._nexarm_click_snap = dict(self._nexarm_click_snap)
+                    self._nexarm_click_snap["xyz"] = held
+                    self._nexarm_click_snap["pan"] = float(
+                        self.nexarm_pan_approach_rad
+                    )
+            self._nexarm_active_pan = float(self.nexarm_pan_approach_rad)
+            self.get_logger().info(
+                f"grasp_at ({held[0]:.3f},{held[1]:.3f},{held[2]:.3f}) "
+                f"low={self._object_low}"
+            )
+            cmd = "execute"
         if cmd in ("execute", "grasp"):
             with self._lock:
                 if self._busy:
@@ -4686,105 +8345,6 @@ class GraspFromClick(Node):
                 return float(np.median(found))
         return None
 
-    def _click_ray_point(
-        self,
-        u_norm: float,
-        v_norm: float,
-        img_w,
-        img_h,
-    ) -> Optional[Tuple[float, float, float]]:
-        """Planning-frame point of the clicked pixel along its own ray."""
-        with self._lock:
-            info = self._info
-            frame = self._depth_frame or self.camera_frame
-            depth = None if self._depth is None else self._depth.copy()
-        if info is None or depth is None:
-            return None
-        pix = self._click_k_pixels(u_norm, v_norm, img_w, img_h, info, depth)
-        if pix is None:
-            return None
-        tf = self._d435i_planning_T(frame or info.header.frame_id)
-        if tf is None:
-            return None
-        ray = self._optical_ray_unnorm(float(pix[0]), float(pix[1]), info)
-        if ray is None:
-            return None
-        u_d, v_d = self._depth_sample_uv(int(pix[0]), int(pix[1]), info, depth)
-        z_opt = self._depth_at_click_pixel(depth, u_d, v_d)
-        if z_opt is None:
-            return None
-        T, _used = tf
-        origin = np.asarray(T[:3, 3], dtype=np.float64)
-        direction = T[:3, :3] @ np.asarray(ray, dtype=np.float64)
-        hit = origin + float(z_opt) * direction
-        if not np.all(np.isfinite(hit)):
-            return None
-        # The center pixel is the near face. The jaws have to reach the
-        # floor under that pixel, which the surrounding depth still sees.
-        floor_z = self._floor_z_around_click(
-            depth, u_d, v_d, info, T, (float(hit[0]), float(hit[1]))
-        )
-        if floor_z is not None:
-            grasp_z = float(floor_z) + float(self.floor_tcp_lift)
-            if float(hit[2]) > grasp_z + 0.015:
-                dz = float(direction[2])
-                if abs(dz) > 1e-6:
-                    t_hit = (grasp_z - float(origin[2])) / dz
-                    if 0.05 < t_hit < 1.30:
-                        lowered = origin + t_hit * direction
-                        if np.all(np.isfinite(lowered)):
-                            self.get_logger().info(
-                                f"click ray to floor {float(hit[2]):.3f}"
-                                f"→{float(lowered[2]):.3f} "
-                                f"({float(lowered[0]):.3f},{float(lowered[1]):.3f})"
-                            )
-                            hit = lowered
-        return (float(hit[0]), float(hit[1]), float(hit[2]))
-
-    def _floor_z_around_click(
-        self,
-        depth: np.ndarray,
-        u_d: int,
-        v_d: int,
-        info: CameraInfo,
-        T: np.ndarray,
-        near_xy: Tuple[float, float],
-    ) -> Optional[float]:
-        """Height of the surface under the click, not the near face."""
-        fx, fy = float(info.k[0]), float(info.k[4])
-        cx, cy = float(info.k[2]), float(info.k[5])
-        if fx < 1.0 or fy < 1.0:
-            return None
-        h, w = depth.shape[:2]
-        iw = int(info.width) if info.width else w
-        ih = int(info.height) if info.height else h
-        R = T[:3, :3]
-        origin = np.asarray(T[:3, 3], dtype=np.float64)
-        zs: List[float] = []
-        rad = 48
-        for vv in range(max(0, v_d - rad), min(h, v_d + rad + 1), 4):
-            for uu in range(max(0, u_d - rad), min(w, u_d + rad + 1), 4):
-                z = float(depth[vv, uu])
-                if not (np.isfinite(z) and self.min_depth < z < self.max_depth):
-                    continue
-                if iw != w or ih != h:
-                    ku = uu * (iw - 1) / max(1, w - 1)
-                    kv = vv * (ih - 1) / max(1, h - 1)
-                else:
-                    ku, kv = float(uu), float(vv)
-                ray = np.array(
-                    [(ku - cx) / fx, (kv - cy) / fy, 1.0], dtype=np.float64
-                )
-                p = origin + z * (R @ ray)
-                if abs(float(p[0]) - near_xy[0]) > 0.18:
-                    continue
-                if abs(float(p[1]) - near_xy[1]) > 0.18:
-                    continue
-                zs.append(float(p[2]))
-        if len(zs) < 12:
-            return None
-        return float(np.percentile(zs, 20.0))
-
     def _optical_ray_unnorm(
         self, u_px: float, v_px: float, info: CameraInfo
     ) -> Optional[np.ndarray]:
@@ -4963,8 +8523,16 @@ class GraspFromClick(Node):
             return None
         return (float(p[0]), float(p[1]))
 
-    def _viz_plausible(self, xyz: Tuple[float, float, float]) -> bool:
-        return 0.03 <= xyz[2] <= 0.50 and math.hypot(xyz[0], xyz[1]) < 0.55
+    def _viz_plausible(
+        self,
+        xyz: Tuple[float, float, float],
+        support_z: Optional[float] = None,
+    ) -> bool:
+        if support_z is not None:
+            height = float(xyz[2]) - float(support_z)
+            return -0.02 <= height <= 0.20 and math.hypot(xyz[0], xyz[1]) < 0.55
+        z_lo = -0.22 if getattr(self, "_nexarm", False) else 0.03
+        return z_lo <= xyz[2] <= 0.50 and math.hypot(xyz[0], xyz[1]) < 0.55
 
     def _click_pixel_xyz(
         self,
@@ -5022,7 +8590,15 @@ class GraspFromClick(Node):
             z = self._standing_optical_z(depth, u_d, v_d, info, T, ray, u_norm * 0.0 + v_norm)
             if z is not None:
                 xyz = self._hit_optical_z(T, ray, z)
-                if _ok_depth_hit(xyz):
+                if xyz is not None and float(xyz[2]) < float(self.table_z):
+                    support = (
+                        float(self._floor_z_cache)
+                        if self._floor_z_cache is not None
+                        else -0.096
+                    )
+                    if self._viz_plausible(xyz, support_z=support):
+                        return xyz, "floor-depth"
+                if xyz is not None and _ok_depth_hit(xyz):
                     return xyz, "pix-depth"
             pole_xy = self._pole_xy_from_depth_column(u_px, v_px, depth, info, T)
             if pole_xy is not None:
@@ -5059,7 +8635,9 @@ class GraspFromClick(Node):
         hit = self._tf_cache.get(key)
         if hit is not None and now - hit[0] < 0.20:
             return None if hit[1] is None else hit[1].copy()
-        timeouts = (0.0,) if (self._overlay_busy or self._clicking) else (0.0, 0.25)
+        # A click must be allowed to wait briefly. A 0 s lookup misses the
+        # pan-bracket camera and the GUI reports "no tf".
+        timeouts = (0.0, 0.35)
         tf = None
         for timeout_s in timeouts:
             try:
@@ -5104,171 +8682,35 @@ class GraspFromClick(Node):
         self._tf_cache[key] = (now, T)
         return T
 
+    def _grasp_on_floor_surface(self, feat) -> Optional[Tuple[float, float, float]]:
+        """Jaws on a click whose depth is the floor, not the table plane.
+
+        The table plane (table_z + object_height) sits about 20 cm above the
+        floor. A downward ray crosses it first, and the old viz path aimed
+        there whenever the floor hit failed the table-height plausibility
+        check. The measured surface is the pole.
+        """
+        if not feat or feat.get("centroid") is None:
+            return None
+        # Upper-image clicks are the object, not the floor under the wrist camera.
+        if not bool(feat.get("low")):
+            return None
+        if float(feat["z"]) >= float(self.table_z):
+            return None
+        c = feat["centroid"]
+        grasp_z = float(feat["z"]) + 0.012
+        floor_z = (
+            float(self._floor_z_cache)
+            if self._floor_z_cache is not None
+            else -0.096
+        )
+        if grasp_z < floor_z - 0.04:
+            grasp_z = floor_z + 0.012
+        return (float(c[0]), float(c[1]), float(grasp_z))
+
     def _click_plane_z(self) -> float:
         """Horizontal plane the click ray should hit (object mid-height, not floor)."""
         return float(self.table_z + self.object_height)
-
-    def _floor_target_z(self, top_z: float) -> float:
-        """Measured top plus a small clearance, allowed down to the floor minimum."""
-        z = float(top_z) + float(self.floor_tcp_lift)
-        return max(
-            float(self.floor_z_min),
-            min(float(self.floor_object_max_z), z),
-        )
-
-    def _apply_floor_xyz(
-        self, xyz: Tuple[float, float, float]
-    ) -> Optional[Tuple[float, float, float]]:
-        """Keep the measured click. Do not move it onto another plane."""
-        if not self._object_low or self._object_centroid is None:
-            return None
-        src = self._object_centroid
-        return (float(src[0]), float(src[1]), float(src[2]))
-
-    def _floor_ray_xyz(
-        self,
-        u_norm: float,
-        v_norm: float,
-        img_w,
-        img_h,
-    ) -> Optional[Tuple[float, float, float]]:
-        """Click ray at the measured range, pitched onto the floor.
-
-        Pitch is about the camera's horizontal axis, so the point stays on the
-        clicked column. Scaling the base-frame azimuth shoves it sideways.
-        """
-        with self._lock:
-            info = self._info
-            frame = self._depth_frame or self.camera_frame
-            depth = None if self._depth is None else self._depth.copy()
-        if info is None:
-            return None
-        pix = self._click_k_pixels(u_norm, v_norm, img_w, img_h, info, depth)
-        if pix is None:
-            return None
-        tf = self._d435i_planning_T(frame or info.header.frame_id)
-        if tf is None:
-            return None
-        T, _used = tf
-        ray = self._optical_ray_unnorm(float(pix[0]), float(pix[1]), info)
-        if ray is None:
-            return None
-        origin = np.array(T[:3, 3], dtype=np.float64)
-        direction = self._pan_undo_dir(T[:3, :3] @ np.asarray(ray, dtype=np.float64))
-        dz = float(direction[2])
-        if abs(dz) < 1e-6:
-            return None
-        if self._object_top_z is not None:
-            plane_z = self._floor_target_z(float(self._object_top_z))
-        else:
-            plane_z = float(self.floor_z_min)
-        t_hit = (plane_z - float(origin[2])) / dz
-        hit = None
-        z_opt = self._floor_optical_z(depth, pix, info)
-        if z_opt is not None:
-            measured = origin + float(z_opt) * direction
-            if float(measured[2]) >= 0.02:
-                hit = measured
-            else:
-                hit = self._pitch_onto_floor(
-                    origin, measured, plane_z, T[:3, :3][:, 0]
-                )
-        if hit is None:
-            if t_hit <= 0.05 or t_hit > 1.30:
-                return None
-            hit = origin + t_hit * direction
-        if float(hit[0]) < 0.02:
-            return None
-        horiz = float(math.hypot(float(hit[0]), float(hit[1])))
-        if horiz > min(2.5, float(self.max_reach)):
-            return None
-        return (float(hit[0]), float(hit[1]), plane_z)
-
-    def _floor_optical_z(
-        self,
-        depth: Optional[np.ndarray],
-        pix: Tuple[int, int],
-        info: CameraInfo,
-    ) -> Optional[float]:
-        """Median range at the click. No standing-object reject."""
-        if depth is None:
-            return None
-        u_d, v_d = self._depth_sample_uv(int(pix[0]), int(pix[1]), info, depth)
-        half = 2
-        h, w = depth.shape[:2]
-        patch = depth[
-            max(0, v_d - half) : min(h, v_d + half + 1),
-            max(0, u_d - half) : min(w, u_d + half + 1),
-        ]
-        valid = patch[
-            np.isfinite(patch) & (patch > self.min_depth) & (patch < self.max_depth)
-        ]
-        if valid.size < 5:
-            return None
-        z_opt = float(np.median(valid))
-        if z_opt <= 0.05 or z_opt > 1.30:
-            return None
-        return z_opt
-
-    def _pitch_onto_floor(
-        self,
-        origin: np.ndarray,
-        measured: np.ndarray,
-        plane_z: float,
-        cam_x: np.ndarray,
-    ) -> Optional[np.ndarray]:
-        """Rotate the measured point about image-horizontal onto the floor.
-
-        Image-horizontal is the camera X axis. That changes height in the
-        image and leaves the clicked column. A base-frame azimuth scale does
-        not, and it walks the point off to the side.
-        """
-        axis = np.asarray(cam_x, dtype=np.float64)
-        an = float(np.linalg.norm(axis))
-        if an < 1e-6:
-            return None
-        axis = axis / an
-        delta = np.asarray(measured, dtype=np.float64) - np.asarray(
-            origin, dtype=np.float64
-        )
-        par = float(np.dot(delta, axis)) * axis
-        perp = delta - par
-        length = float(np.linalg.norm(perp))
-        if length < 1e-4:
-            return None
-        z_perp = (float(plane_z) - float(origin[2])) - float(par[2])
-        if abs(z_perp) > length + 1e-6:
-            return None
-        e1 = perp / length
-        e2 = np.cross(axis, e1)
-        e2n = float(np.linalg.norm(e2))
-        if e2n < 1e-6:
-            return None
-        e2 = e2 / e2n
-        a_c = float(e1[2])
-        b_c = float(e2[2])
-        scale = math.hypot(a_c, b_c)
-        if scale < 1e-6:
-            return None
-        rhs = max(-1.0, min(1.0, (z_perp / length) / scale))
-        phi = math.atan2(b_c, a_c)
-        turn = math.acos(rhs)
-        best = None
-        best_abs = 1e9
-        for theta in (phi + turn, phi - turn):
-            theta = (theta + math.pi) % (2.0 * math.pi) - math.pi
-            if abs(theta) < best_abs:
-                best_abs = abs(theta)
-                best = theta
-        if best is None:
-            return None
-        perp2 = length * (math.cos(best) * e1 + math.sin(best) * e2)
-        hit = np.asarray(origin, dtype=np.float64) + par + perp2
-        hit[2] = float(plane_z)
-        self.get_logger().info(
-            f"floor pitch {math.degrees(best):+.1f}° about camera X"
-        )
-        return hit
 
     def _pan_undo_dir(self, direction: np.ndarray) -> np.ndarray:
         """Pitch the look ray up — URDF pan+cam_pitch is steeper than the real D435i."""
@@ -5442,19 +8884,26 @@ class GraspFromClick(Node):
         """
         contact = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
         how = "viz"
-        # Pole clicks re-aim along the look ray. A floor click is already the
-        # ray at floor height; that re-aim slides the block sideways.
-        depth_p = None if self._object_low else self._pan_depth_xyz(xyz)
-        if depth_p is not None:
-            dh = math.hypot(depth_p[0], depth_p[1])
-            ch = math.hypot(contact[0], contact[1])
-            if (
-                depth_p[0] >= 0.05
-                and 0.08 <= dh <= 0.55
-                and (ch < 1e-3 or abs(dh - ch) < 0.12)
-            ):
-                contact = (float(depth_p[0]), float(depth_p[1]), float(xyz[2]))
-                how = "depth-xy"
+        # Incoming xyz is already the depth point (pulled in to reach). Do not
+        # re-shoot that shortened point; that landed the jaws on the gripper.
+        if getattr(self, "_nexarm", False):
+            how = "depth"
+            cap = float(self.max_reach) - 0.02
+            if math.hypot(contact[0], contact[1]) > cap:
+                contact = self._pull_xy_to_reach(contact, cap)
+                how = "depth+reach"
+        else:
+            depth_p = None if self._object_low else self._pan_depth_xyz(xyz)
+            if depth_p is not None:
+                dh = math.hypot(depth_p[0], depth_p[1])
+                ch = math.hypot(contact[0], contact[1])
+                if (
+                    depth_p[0] >= 0.05
+                    and 0.08 <= dh <= 0.55
+                    and (ch < 1e-3 or abs(dh - ch) < 0.12)
+                ):
+                    contact = (float(depth_p[0]), float(depth_p[1]), float(xyz[2]))
+                    how = "depth-xy"
         if float(self.grasp_farther_m) > 1e-4:
             contact = self._push_xy_farther(contact, float(self.grasp_farther_m))
         horiz = math.hypot(contact[0], contact[1])
@@ -5480,7 +8929,7 @@ class GraspFromClick(Node):
                 min(self.ws_max[1], max(self.ws_min[1], contact[1])),
                 min(self.ws_max[2], max(self.ws_min[2] + 0.02, contact[2])),
             )
-        ee = self._ee_for_bar_contact(contact)
+        ee = contact if getattr(self, "_nexarm", False) else self._ee_for_bar_contact(contact)
         self.get_logger().info(
             f"bar contact {how} ({contact[0]:.3f},{contact[1]:.3f},{contact[2]:.3f}) "
             f"ee=({ee[0]:.3f},{ee[1]:.3f},{ee[2]:.3f}) "
@@ -5537,9 +8986,8 @@ class GraspFromClick(Node):
         return None, pre_xyz, ik_xyz
 
     def _camera_frame_candidates(self, reported: str) -> List[str]:
-        # Grasp must follow the pan joint. Static camera_* (nav calibration at
-        # pan≈0) and link-frame nearest-hit picking mapped clicks too close /
-        # too far. Prefer URDF optical frames; static optical is fallback only.
+        # RealSense stamps images camera_color_optical_frame, which is not in
+        # the arm tree. The pan-bracket D435i optical frame is.
         frames = []
         for f in (
             "d435i_color_optical_frame",
@@ -5552,6 +9000,17 @@ class GraspFromClick(Node):
             if f and f not in frames:
                 frames.append(f)
         return frames
+
+    def _tf_camera_frame(self, frame: str) -> str:
+        """Frame that is actually parented to the robot for this image."""
+        if frame in (
+            "camera_color_optical_frame",
+            "camera_depth_optical_frame",
+            "camera_color_frame",
+            "camera_link",
+        ):
+            return "d435i_color_optical_frame"
+        return frame or "d435i_color_optical_frame"
 
     def _table_hit_for_frame(
         self, ray_optical: np.ndarray, frame: str
@@ -5670,9 +9129,20 @@ class GraspFromClick(Node):
         return self._in_workspace(xyz)
 
     def _xyz_is_grasp_object(self, xyz: Tuple[float, float, float]) -> bool:
-        """True for a floor block or a point in the tabletop object volume."""
+        """Floor objects are measured from the floor. Table objects keep their band."""
+        if getattr(self, "_nexarm", False):
+            # The wrist camera looks through heights the PX150 table/floor bands
+            # never included, so those bands painted every cell unreachable.
+            return self._in_workspace(xyz)
         z = float(xyz[2])
-        if 0.02 <= z <= float(self.floor_object_max_z):
+        floor_z = (
+            float(self._floor_z_cache)
+            if self._floor_z_cache is not None
+            else -0.096
+        )
+        if 0.01 <= (z - floor_z) <= 0.15:
+            if self._floor_reach and self._reach_phrase(xyz) is not None:
+                return False
             return True
         lo = float(self.table_z) + float(self.d435i_reach_min_above_table)
         hi = float(self.table_z) + float(self.d435i_reach_max_above_table)
@@ -5766,6 +9236,8 @@ class GraspFromClick(Node):
         info_h = int(info.height) if info.height else dh
         R = T[:3, :3]
         tvec = T[:3, 3]
+        foot = self._tf_floor_pose()
+        centers = self._arm_link_centers()
         cells: List[int] = []
         n_obj = 0
         for j in range(nv):
@@ -5776,7 +9248,9 @@ class GraspFromClick(Node):
                 u_d = int(round(u_norm * (dw - 1)))
                 z = self._near_depth(depth, u_d, v_d)
                 if z is None:
-                    cells.append(0)
+                    cells.append(self._floor_ring_cell(u_d, v_d, info, R, tvec, foot[2]))
+                    if cells[-1]:
+                        n_obj += 1
                     continue
                 if info_w > 1 and info_h > 1 and (info_w != dw or info_h != dh):
                     u_k = u_d * (info_w - 1) / max(1, dw - 1)
@@ -5789,12 +9263,30 @@ class GraspFromClick(Node):
                 )
                 p_arm = R @ p_cam + tvec
                 xyz = (float(p_arm[0]), float(p_arm[1]), float(p_arm[2]))
-                ok = self._xyz_grasp_reachable(xyz) and self._xyz_is_grasp_object(xyz)
+                on_robot = bool(
+                    _floor_mod().point_on_robot(
+                        np.array([xyz]),
+                        centers,
+                        0.08,
+                        (foot[0], foot[1]),
+                        0.175,
+                        foot[2] + 0.20,
+                    )[0]
+                )
+                ok = (
+                    not on_robot
+                    and self._xyz_grasp_reachable(xyz)
+                    and self._xyz_is_grasp_object(xyz)
+                )
                 if ok:
                     n_obj += 1
                 cells.append(1 if ok else 0)
         self._log_reach_overlay_stats(n_obj, nu * nv, "depth")
-        return {"nu": nu, "nv": nv, "cells": cells}
+        mask = {"nu": nu, "nv": nv, "cells": cells}
+        if self._grasp_uv is not None:
+            mask["grasp_u"] = float(self._grasp_uv[0])
+            mask["grasp_v"] = float(self._grasp_uv[1])
+        return mask
 
     def _reach_mask_from_jpeg_objects(
         self, info: CameraInfo, cam_frame: str
@@ -5861,8 +9353,8 @@ class GraspFromClick(Node):
         self._reach_warn_stamp = now
         self.get_logger().info(
             f"reach overlay[{how}]: {n_obj}/{total} object cells "
-            f"(floor 0.02–{self.floor_object_max_z:.2f}m or "
-            f"above table≥{self.d435i_reach_min_above_table:.2f}m, "
+            f"(floor ring or 1–15 cm above the floor, "
+            f"table band ≥{self.d435i_reach_min_above_table:.2f}m, "
             f"reach≤{self.max_reach:.2f}m)"
         )
 
@@ -5883,11 +9375,19 @@ class GraspFromClick(Node):
         if mask is None:
             self._reach_overlay_stamp = now
             return
-        if mask == self._cached_reach_mask:
+        if (
+            mask == self._cached_reach_mask
+            and self._grasp_uv == getattr(self, "_cached_grasp_uv", None)
+        ):
             self._reach_overlay_stamp = now
             return
         self._reach_overlay_stamp = now
         self._reach_mask_pan = pan
+        self._cached_grasp_uv = self._grasp_uv
+        if self._grasp_uv is not None and "grasp_u" not in mask:
+            mask = dict(mask)
+            mask["grasp_u"] = float(self._grasp_uv[0])
+            mask["grasp_v"] = float(self._grasp_uv[1])
         self._cached_reach_mask = mask
         payload = {
             "status": self._last_status or "idle",
@@ -5907,8 +9407,7 @@ class GraspFromClick(Node):
             return (
                 False,
                 None,
-                f"No TF/table hit {self.planning_frame} <- camera "
-                "(check static camera TF + robot_state_publisher)",
+                f"camera ray missed the table in {self.planning_frame}",
             )
         xyz = self._table_plane_xyz_at_px(
             u_px, v_px, info, cam_frame, frame=table_frame
@@ -5935,7 +9434,22 @@ class GraspFromClick(Node):
         info: CameraInfo,
         frame: str,
     ) -> Tuple[bool, Optional[Tuple[float, float, float]], str]:
-        z = self._near_depth(depth, u_px, v_px)
+        # NexArm click path: median of a small patch (reject non-finite / far
+        # flyers). PX150 keeps the nearer-percentile estimator.
+        if getattr(self, "_nexarm", False):
+            h, w = depth.shape[:2]
+            half = max(1, int(self.depth_window) // 2)
+            y0, y1 = max(0, v_px - half), min(h, v_px + half + 1)
+            x0, x1 = max(0, u_px - half), min(w, u_px + half + 1)
+            patch = depth[y0:y1, x0:x1].reshape(-1)
+            valid = patch[
+                np.isfinite(patch)
+                & (patch > self.min_depth)
+                & (patch < self.max_depth)
+            ]
+            z = float(np.median(valid)) if valid.size else None
+        else:
+            z = self._near_depth(depth, u_px, v_px)
         if z is None:
             return False, None, "No valid depth at click"
         fx, fy = float(info.k[0]), float(info.k[4])
@@ -5945,7 +9459,7 @@ class GraspFromClick(Node):
         x = (u_px - cx) * z / fx
         y = (v_px - cy) * z / fy
         pose_cam = PoseStamped()
-        pose_cam.header.frame_id = frame or self.camera_frame
+        pose_cam.header.frame_id = self._tf_camera_frame(frame or self.camera_frame)
         pose_cam.header.stamp = self.get_clock().now().to_msg()
         pose_cam.pose.position.x = float(x)
         pose_cam.pose.position.y = float(y)
@@ -6032,7 +9546,13 @@ class GraspFromClick(Node):
         # when depth is clearly closer and still in front of the arm.
         xyz = None
         method = ""
-        if plane_xyz is not None:
+        if getattr(self, "_nexarm", False):
+            # Calibrated depth + TF only — no table blend, pull, or farther bias.
+            if depth_xyz is None:
+                return False, None, plane_msg or "No valid depth at click"
+            xyz = depth_xyz
+            method = "depth_tf"
+        elif plane_xyz is not None:
             xyz = plane_xyz
             method = "table"
             if depth_xyz is not None:
@@ -6050,18 +9570,17 @@ class GraspFromClick(Node):
 
         horiz = math.hypot(xyz[0], xyz[1])
         bias = float(self.grasp_farther_m)
-        if bias > 1e-4 and horiz > 0.04:
+        if (
+            not getattr(self, "_nexarm", False)
+            and bias > 1e-4
+            and horiz > 0.04
+        ):
             new_r = min(horiz + bias, float(self.max_reach) - 0.01)
             if new_r > horiz:
                 s = new_r / horiz
                 xyz = (float(xyz[0]) * s, float(xyz[1]) * s, float(xyz[2]))
                 method = f"{method}+farther{bias * 100:.0f}cm"
                 horiz = new_r
-        floor_xyz = self._apply_floor_xyz(xyz)
-        if floor_xyz is not None:
-            xyz = floor_xyz
-            method = f"{method}+floorZ{xyz[2]:.2f}"
-            horiz = math.hypot(xyz[0], xyz[1])
         if horiz > self.max_reach:
             return (
                 False,
@@ -6122,14 +9641,203 @@ class GraspFromClick(Node):
     def _lock_pan(self):
         """Hold current tilt/pan (do not snap to zero — URDF TF follows the joint)."""
         cmd = (
-            float(self._pan_pos)
-            if self._pan_pos is not None
-            else float(self.pan_lock)
+            float(self._nexarm_pan_cmd)
+            if self._nexarm_pan_cmd is not None
+            else (
+                float(self._pan_pos)
+                if self._pan_pos is not None
+                else float(self.pan_lock)
+            )
         )
         msg = JointSingleCommand()
         msg.name = "pan"
         msg.cmd = cmd
         self._pan_pub.publish(msg)
+
+    def _nexarm_slew_pan(self, pan: float, gen: int) -> bool:
+        """Command a pan angle; True only when the servo reaches it."""
+        pan = float(pan)
+        # Two attempts: watchdog may bring xs_sdk back mid-wait.
+        for attempt in (1, 2):
+            self._ensure_pan_tilted(pan)
+            t0 = time.monotonic()
+            last_pub = t0
+            start_pos = self._pan_pos
+            while time.monotonic() - t0 < 4.0:
+                if self._is_cancelled(gen):
+                    return False
+                if (
+                    self._pan_pos is not None
+                    and abs(float(self._pan_pos) - pan) < 0.10
+                ):
+                    if not self._nexarm_wait_sensors(gen, 0.25):
+                        return False
+                    self.get_logger().info(
+                        f"nexarm pan slew ok cmd={pan:.3f} "
+                        f"meas={float(self._pan_pos):.3f} "
+                        f"attempt={attempt}"
+                    )
+                    return True
+                if time.monotonic() - last_pub > 0.35:
+                    msg = JointSingleCommand()
+                    msg.name = "pan"
+                    msg.cmd = pan
+                    self._pan_pub.publish(msg)
+                    last_pub = time.monotonic()
+                time.sleep(0.05)
+            self.get_logger().warn(
+                f"nexarm pan slew attempt {attempt} FAIL cmd={pan:.3f} "
+                f"meas={self._pan_pos} start={start_pos}"
+            )
+            if attempt == 1 and not self._sleep_interruptible(1.2, gen):
+                return False
+        return False
+
+    def _ensure_pan_tilted(self, pan: float) -> None:
+        """Tip the D435i pan toward the gripper (position command only).
+
+        Do NOT call set_operating_modes here. The pan-only xs_sdk used to load
+        the full PX150 modes.yaml (arm/gripper groups); that service then
+        threw std::out_of_range and killed the driver mid-grasp.
+        """
+        pan = float(pan)
+        self._nexarm_pan_cmd = pan
+        # Position command only. Torque/mode services have crashed the
+        # pan-only xs_sdk (out_of_range); boot config already torques pan.
+        msg = JointSingleCommand()
+        msg.name = "pan"
+        msg.cmd = pan
+        for _ in range(8):
+            self._pan_pub.publish(msg)
+            time.sleep(0.04)
+        self.get_logger().info(f"nexarm pan tilt cmd={pan:.3f} (toward gripper)")
+
+    def _nexarm_pan_nudge(self, pan: float, bursts: int = 3) -> None:
+        """Light pan command for gradual tip during the last centimetres."""
+        pan = float(pan)
+        self._nexarm_pan_cmd = pan
+        self._nexarm_active_pan = pan
+        msg = JointSingleCommand()
+        msg.name = "pan"
+        msg.cmd = pan
+        for _ in range(max(1, int(bursts))):
+            self._pan_pub.publish(msg)
+            time.sleep(0.02)
+
+    def _nexarm_tip_final_jaw_edge(self, gen: int) -> bool:
+        """Gradual tip to pan_final; confirm jaw-edge depth, then ready to pinch.
+
+        Position commands only on /d435i_tilt (no mode/torque services) so the
+        pan-only xs_sdk stays alive. Jaw-edge ROI is meaningful only once the
+        camera looks into the open jaws at pan_final.
+        """
+        if not bool(getattr(self, "nexarm_jaw_edge_stop", False)):
+            return True
+        if self._is_cancelled(gen):
+            return False
+        pan0 = float(
+            getattr(self, "_nexarm_active_pan", None)
+            or getattr(self, "_nexarm_pan_cmd", None)
+            or self.nexarm_pan_approach_rad
+        )
+        pan1 = float(self.nexarm_pan_final_rad)
+        if abs(pan1 - pan0) < 0.03:
+            self._nexarm_pan_nudge(pan1, bursts=5)
+        else:
+            # ~0.08 rad steps — smooth tip for the last few cm of look-down.
+            steps = max(3, int(math.ceil(abs(pan1 - pan0) / 0.08)))
+            for i in range(1, steps + 1):
+                if self._is_cancelled(gen):
+                    return False
+                pan = pan0 + (pan1 - pan0) * (float(i) / float(steps))
+                self._nexarm_pan_nudge(float(pan), bursts=4)
+                time.sleep(0.10)
+        self._ensure_pan_tilted(pan1)
+        if not self._nexarm_wait_sensors(gen, 0.28):
+            return False
+        best: Optional[dict] = None
+        for i in range(8):
+            if self._is_cancelled(gen):
+                return False
+            sample = self._d435i_jaw_edge_sample()
+            mouth = self._d435i_mouth_sample()
+            if sample is not None:
+                best = sample
+                self.get_logger().info(
+                    f"nexarm jaw-edge {i + 1}: n={sample['n']} "
+                    f"uv=({sample['u']:.2f},{sample['v']:.2f}) "
+                    f"z={sample['z']:.3f} hit={sample['hit']} "
+                    f"pan={pan1:.2f}"
+                )
+                if sample.get("hit"):
+                    self._nexarm_edge_confirmed = True
+                    return True
+            else:
+                self.get_logger().info(
+                    f"nexarm jaw-edge {i + 1}: none pan={pan1:.2f}"
+                )
+            # Gripper-opening depth at final pan also counts as in-jaws.
+            if mouth is not None and (
+                mouth.get("hit")
+                or (
+                    int(mouth.get("n", 0)) >= 40
+                    and float(mouth.get("elev", 0.0))
+                    >= float(self.nexarm_mouth_elev_m) * 0.7
+                    and float(mouth.get("z", 99.0))
+                    <= float(self.nexarm_mouth_near_z_max) + 0.04
+                )
+            ):
+                self.get_logger().info(
+                    f"nexarm jaw-edge via mouth fill n={mouth.get('n')} "
+                    f"elev={float(mouth.get('elev', 0.0)):.3f} "
+                    f"z={float(mouth.get('z', 0.0)):.3f} pan={pan1:.2f}"
+                )
+                self._nexarm_edge_confirmed = True
+                return True
+            time.sleep(0.10)
+        if best is not None:
+            n = int(best.get("n", 0))
+            z = float(best.get("z", 99.0))
+            z_hi = float(self.nexarm_jaw_edge_z_max) + 0.06
+            if n >= max(15, int(self.nexarm_jaw_edge_min_pix) // 2) and z <= z_hi:
+                self.get_logger().info(
+                    f"nexarm jaw-edge soft confirm n={n} z={z:.3f} "
+                    f"pan={pan1:.2f}"
+                )
+                self._nexarm_edge_confirmed = True
+                return True
+        self.get_logger().warn(
+            f"nexarm jaw-edge miss at pan_final={pan1:.2f} "
+            f"(best={best})"
+        )
+        return False
+
+    def _nexarm_pan_blend_for_s(self, s_meas: float) -> float:
+        """Blend approach→mid pan as the tip closes on the click.
+
+        Full tip to pan_final kills the gripper-opening depth corridor (mouth
+        ROI goes empty). Cap the in-advance blend at pan_mid; finish the tip
+        to pan_final only after seat.
+        """
+        pan0 = float(self.nexarm_pan_approach_rad)
+        pan1 = float(self.nexarm_pan_final_rad)
+        # Mid tip keeps the gap between fingers in the fixed mouth ROI.
+        pan_mid = float(
+            getattr(
+                self,
+                "nexarm_pan_mid_rad",
+                pan0 + 0.45 * (pan1 - pan0),
+            )
+        )
+        s0 = float(getattr(self, "nexarm_pan_blend_s0_m", 0.12))
+        s1 = float(getattr(self, "nexarm_pan_blend_s1_m", 0.045))
+        s = float(s_meas)
+        if s >= s0:
+            return pan0
+        if s <= s1:
+            return pan_mid
+        t = (s0 - s) / max(1e-3, s0 - s1)
+        return pan0 + t * (pan_mid - pan0)
 
     def _bus_live(self) -> bool:
         return (time.monotonic() - self._js_ok_stamp) < 6.0
@@ -6215,6 +9923,11 @@ class GraspFromClick(Node):
         (joint stuck ~1.53) while the oval stayed green. Overheat is handled
         by holding the stall pose after a real close, not by starving current.
         """
+        if getattr(self, "_nexarm", False):
+            # NexArm gripper is driven over USB via /grab_it/nexarm_gripper;
+            # Dynamixel mode/torque services do not apply.
+            self._gripper_mode_ok = True
+            return True
         if self._gripper_mode_ok and not force:
             return True
         if self._torque_cli.service_is_ready():
@@ -6261,6 +9974,10 @@ class GraspFromClick(Node):
         GUI / xs_sdk can leave a different Profile_Velocity than grasp expects;
         `_gripper_mode_ok` then skipped the write and closes felt inconsistent.
         """
+        if getattr(self, "_nexarm", False):
+            # Pan-only xs_sdk has no gripper joint; OperatingModes(name=gripper)
+            # throws std::out_of_range and kills the driver.
+            return
         if not self._mode_cli.service_is_ready():
             return
         req = OperatingModes.Request()
@@ -6284,9 +10001,15 @@ class GraspFromClick(Node):
         if gj is None:
             return
         if extra is None:
-            extra = -abs(float(self.grip_hold_extra))
+            # NexArm open=0 closed=+0.025: nudge slightly toward closed.
+            # PX150 open=+1.65 closed=-0.95: nudge slightly toward closed.
+            span = float(self.grip_joint_closed) - float(self.grip_joint_open)
+            if getattr(self, "_nexarm", False):
+                extra = 0.15 * abs(span) if span >= 0.0 else -0.15 * abs(span)
+            else:
+                extra = -abs(float(self.grip_hold_extra))
         hold = float(gj) + float(extra)
-        hold = max(float(self.grip_joint_closed), min(float(self.grip_joint_open), hold))
+        hold = self._grip_span_clamp(hold)
         self._last_grip_joint = hold
         self._publish_gripper_joint(hold, n=2)
 
@@ -6297,6 +10020,14 @@ class GraspFromClick(Node):
         return float(self.grip_joint_closed)
 
     def _publish_gripper_joint(self, joint: float, n: int = 3):
+        if getattr(self, "_nexarm", False):
+            msg = JointState()
+            msg.name = ["gripper"]
+            msg.position = [float(joint)]
+            for _ in range(max(1, int(n))):
+                self._nexarm_grip_pub.publish(msg)
+                time.sleep(0.03)
+            return
         msg = JointSingleCommand()
         msg.name = "gripper"
         msg.cmd = float(joint)
@@ -6370,6 +10101,60 @@ class GraspFromClick(Node):
                 self._joint_pos[j] = float(v)
         return ok
 
+    def _measured_gripper(
+        self, max_age_s: float = 0.6
+    ) -> Optional[float]:
+        """Latest echo-filtered gripper joint, or None if stale/missing."""
+        gj = self._gripper_meas
+        if gj is None:
+            return None
+        if time.monotonic() - float(self._gripper_meas_t) > float(max_age_s):
+            return None
+        return float(gj)
+
+    def _wait_gripper_open_measured(
+        self, gen: int, timeout_s: float = 2.0
+    ) -> bool:
+        """Command open and wait for a measured joint in the open band."""
+        self._ensure_gripper_mode()
+        self._last_grip_joint = float(self.grip_joint_open)
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < max(0.4, float(timeout_s)):
+            if self._is_cancelled(gen):
+                return False
+            self._publish_gripper_joint(self.grip_joint_open, n=1)
+            meas = self._measured_gripper(max_age_s=0.8)
+            if meas is not None and self._gripper_looks_open(meas):
+                self.get_logger().info(
+                    f"gripper open verified measured={meas:.4f} "
+                    f"(open={float(self.grip_joint_open):.4f})"
+                )
+                return True
+            time.sleep(0.08)
+        self.get_logger().warn(
+            f"gripper did not open — measured={self._gripper_meas} "
+            f"cmd={self._last_grip_joint} joint={self._gripper_joint}"
+        )
+        return False
+
+    def _gripper_looks_open(self, joint: float) -> bool:
+        """PX150 open is a large positive angle. NexArm open ≈ grip_joint_open."""
+        if getattr(self, "_nexarm", False):
+            return abs(float(joint) - float(self.grip_joint_open)) <= 0.004
+        return float(joint) >= 0.40
+
+    def _grip_span_clamp(self, cmd: float) -> float:
+        a = float(self.grip_joint_open)
+        b = float(self.grip_joint_closed)
+        lo, hi = (a, b) if a <= b else (b, a)
+        return min(hi, max(lo, float(cmd)))
+
+    def _grip_toward_closed(self, cmd: float, step: float) -> float:
+        close_j = float(self.grip_joint_closed)
+        if close_j >= float(self.grip_joint_open):
+            return min(close_j, float(cmd) + float(step))
+        return max(close_j, float(cmd) - float(step))
+
     def _gripper_reopen(self, gen: int, timeout: float = 2.2) -> bool:
         """Open until the joint actually leaves the closed stop.
 
@@ -6385,7 +10170,7 @@ class GraspFromClick(Node):
                 return False
             self._publish_gripper_joint(self.grip_joint_open, n=2)
             gj = self._gripper_joint
-            if gj is not None and float(gj) >= 0.40:
+            if gj is not None and self._gripper_looks_open(float(gj)):
                 return True
             time.sleep(0.08)
         self.get_logger().warn(
@@ -6403,23 +10188,40 @@ class GraspFromClick(Node):
     ) -> bool:
         """Mode + burst command. Returns False if cancelled."""
         before = self._gripper_joint
-        if not self._set_gripper(cmd, settle_s=settle_s, gen=gen, hold=hold):
+        target = self._gripper_target_joint(cmd)
+        # NexArm stroke is ~0.025 rad — give the USB write time to land.
+        settle = float(settle_s)
+        if getattr(self, "_nexarm", False):
+            settle = max(settle, 0.9)
+        if not self._set_gripper(cmd, settle_s=settle, gen=gen, hold=hold):
             return False
-        if not self._sleep_interruptible(max(0.0, settle_s - 0.6), gen):
+        if not self._sleep_interruptible(max(0.0, settle - 0.6), gen):
             return False
         after = self._gripper_joint
+        span = abs(float(self.grip_joint_closed) - float(self.grip_joint_open))
+        move_eps = max(0.003, 0.20 * span) if getattr(self, "_nexarm", False) else 0.05
+        closing = abs(float(target) - float(self.grip_joint_closed)) <= move_eps
         moved = (
             before is not None
             and after is not None
-            and float(cmd) < 0.0
-            and (before - after) > 0.10
+            and closing
+            and abs(float(after) - float(before)) > move_eps
         )
         if moved:
             self._hold_gripper_present()
-        if before is not None and after is not None and abs(after - before) < 0.05:
-            self.get_logger().warn(
-                f"gripper cmd={cmd:.2f} joint unchanged ({after:.4f})"
-            )
+        if before is not None and after is not None and abs(after - before) < move_eps:
+            # Opening when already open is normal on NexArm (open≈0).
+            already = abs(float(after) - float(target)) < move_eps
+            if not already:
+                self.get_logger().warn(
+                    f"gripper cmd={cmd:.2f} target={target:.4f} "
+                    f"joint unchanged ({after:.4f})"
+                )
+            else:
+                self.get_logger().info(
+                    f"gripper already at target={target:.4f} "
+                    f"(joint={after:.4f})"
+                )
         return True
 
     def _gripper_coast(self):
@@ -6470,6 +10272,122 @@ class GraspFromClick(Node):
         )
         return True, "timeout"
 
+    def _nexarm_gripper_close_until_stall(
+        self, gen: int
+    ) -> Tuple[bool, str]:
+        """Close NexArm jaws using measured joint stall (no Present_Load).
+
+        Hardware: open≈0.025 → closed≈0.0 (yaml-driven). Stall/empty use
+        echo-filtered measurements only — GUI command echoes are ignored.
+        """
+        close_j = float(self.grip_joint_closed)
+        open_j = float(self.grip_joint_open)
+        span = abs(close_j - open_j)
+        # Slow steps so a soft stall can register before the empty stop.
+        step = max(0.0010, min(0.0020, float(self.grip_close_step_rad)))
+        empty_j = float(self.grip_joint_closed) + float(self.grip_empty_closed)
+        # Foam band is always [near_empty, after_25%_travel] with lo <= hi.
+        # (The old close<open branch inverted the test so foam was impossible
+        # for NexArm open=0.025→closed=0.0 — every pinch logged "empty".)
+        if close_j >= open_j:
+            empty_j = min(close_j, max(open_j, empty_j))
+            grasp_lo = open_j + 0.25 * span
+            grasp_hi = empty_j
+        else:
+            empty_j = max(close_j, min(open_j, empty_j))
+            grasp_lo = empty_j
+            grasp_hi = open_j - 0.25 * span
+        if grasp_lo > grasp_hi:
+            grasp_lo, grasp_hi = grasp_hi, grasp_lo
+        min_travel = max(0.004, 0.30 * span)
+        still_need = 4
+        gj0 = self._measured_gripper(max_age_s=1.0)
+        if gj0 is None:
+            gj0 = self._gripper_joint
+        start_gj = float(gj0) if gj0 is not None else open_j
+        cmd_j = self._grip_span_clamp(start_gj)
+        self._last_grip_joint = cmd_j
+        prev_gj = start_gj
+        still = 0
+        t0 = time.monotonic()
+        settle = max(2.0, float(self.grip_close_s), float(self.grip_settle))
+        self.get_logger().info(
+            f"nexarm pinch start measured={start_gj:.4f} "
+            f"empty={empty_j:.4f} foam=[{grasp_lo:.4f},{grasp_hi:.4f}] "
+            f"step={step:.4f} open={open_j:.4f} closed={close_j:.4f}"
+        )
+        while time.monotonic() - t0 < settle:
+            if self._is_cancelled(gen):
+                return False, "cancelled"
+            cmd_j = self._grip_toward_closed(cmd_j, step)
+            self._last_grip_joint = cmd_j
+            self._publish_gripper_joint(cmd_j, n=1)
+            time.sleep(0.06)
+            gj = self._measured_gripper(max_age_s=0.6)
+            if gj is None:
+                continue
+            gj = float(gj)
+            traveled = abs(gj - start_gj)
+            if abs(gj - prev_gj) < max(0.0008, 0.03 * span):
+                still += 1
+            else:
+                still = 0
+            prev_gj = gj
+            if close_j >= open_j:
+                empty_hit = gj >= empty_j - 1e-4
+            else:
+                empty_hit = gj <= empty_j + 1e-4
+            # Foam stall BEFORE empty — soft plush can be crushed through the
+            # foam band into the empty stop if empty is checked first.
+            in_grasp_band = grasp_lo <= gj <= grasp_hi
+            if (
+                still >= still_need
+                and traveled >= min_travel
+                and in_grasp_band
+                and not empty_hit
+            ):
+                self.get_logger().info(
+                    f"nexarm pinch foam measured={gj:.4f} "
+                    f"traveled={traveled:.4f} after {time.monotonic() - t0:.2f}s"
+                )
+                self._gripper_joint = gj
+                self._hold_gripper_present()
+                return True, "foam"
+            if empty_hit and traveled >= min_travel:
+                self.get_logger().info(
+                    f"nexarm pinch empty measured={gj:.4f} "
+                    f"after {time.monotonic() - t0:.2f}s"
+                )
+                return True, "empty"
+            if time.monotonic() - t0 > 0.4:
+                self._publish_status(
+                    "grasping",
+                    f"NexArm pinch… j={gj:.4f} still={still}",
+                )
+        gj = self._measured_gripper(max_age_s=1.0)
+        if gj is not None:
+            gj = float(gj)
+            traveled = abs(gj - start_gj)
+            if close_j >= open_j:
+                empty_hit = gj >= empty_j - 1e-4
+            else:
+                empty_hit = gj <= empty_j + 1e-4
+            in_grasp_band = grasp_lo <= gj <= grasp_hi
+            if traveled >= min_travel and in_grasp_band and not empty_hit:
+                self.get_logger().info(
+                    f"nexarm pinch held short measured={gj:.4f}"
+                )
+                self._gripper_joint = gj
+                self._hold_gripper_present()
+                return True, "foam"
+            if empty_hit:
+                return True, "empty"
+        self.get_logger().warn(
+            f"nexarm pinch timeout measured={self._gripper_meas} "
+            f"joint={self._gripper_joint}"
+        )
+        return True, "timeout"
+
     def _gripper_close_until_stall(
         self, gen: int
     ) -> Tuple[bool, str]:
@@ -6483,6 +10401,8 @@ class GraspFromClick(Node):
         motion as the handoff search pulse). Publishing the hard-closed goal
         every tick let the XL430 velocity profile slam after a slow search.
         """
+        if getattr(self, "_nexarm", False):
+            return self._nexarm_gripper_close_until_stall(gen)
         self._ensure_gripper_mode()
         self._apply_gripper_profile()
         close_j = float(self.grip_joint_closed)
@@ -6490,7 +10410,7 @@ class GraspFromClick(Node):
         step = max(0.015, float(self.grip_close_step_rad))
         gj0 = self._gripper_joint
         cmd_j = float(gj0) if gj0 is not None else open_j
-        cmd_j = max(close_j, min(open_j, cmd_j))
+        cmd_j = self._grip_span_clamp(cmd_j)
         self._last_grip_joint = cmd_j
         idle = self._read_gripper_load()
         # Refresh idle each pinch — a stale first-grab idle skews later thresholds.
@@ -6580,8 +10500,8 @@ class GraspFromClick(Node):
         while time.monotonic() - t0 < settle:
             if self._is_cancelled(gen):
                 return False, "cancelled"
-            # Step the goal toward closed — do not jump to close_j in one shot.
-            cmd_j = max(close_j, cmd_j - step)
+            # Step toward closed. NexArm closed is a larger command than open.
+            cmd_j = self._grip_toward_closed(cmd_j, step)
             self._last_grip_joint = cmd_j
             self._publish_gripper_joint(cmd_j, n=1)
             time.sleep(0.05)
@@ -6645,6 +10565,25 @@ class GraspFromClick(Node):
             return True, "foam"
         if _empty_slam():
             return True, "empty"
+        # Soft or thick objects stop the jaws well short of an empty close
+        # with load under the hard grab threshold. That is a hold. Calling it
+        # a miss commands the gripper open and the servo then stops answering.
+        gj = self._gripper_joint
+        mid = 0.45 * (
+            float(self.grip_joint_open) + float(self.grip_joint_closed)
+        )
+        if (
+            gj is not None
+            and start_gj is not None
+            and (float(start_gj) - float(gj)) > 0.12
+            and empty_j < float(gj) <= mid
+        ):
+            self.get_logger().info(
+                f"gripper held short of empty close joint={float(gj):.3f} "
+                f"load={last_load}"
+            )
+            self._hold_gripper_present()
+            return True, "foam"
         self.get_logger().warn(
             f"gripper close timeout load={last_load} joint={self._gripper_joint}"
         )
@@ -6738,6 +10677,9 @@ class GraspFromClick(Node):
         """
         ax, ay = self._waist_aim_xy(xyz)
         kinematic = math.atan2(float(ay), float(ax))
+        if getattr(self, "_nexarm", False):
+            # shoulder_pan axis is -Z, so the joint command is the opposite of yaw.
+            kinematic = -kinematic
         kinematic = float(self.waist_align_sign) * kinematic + float(
             self.waist_align_offset
         )
@@ -6750,7 +10692,7 @@ class GraspFromClick(Node):
             matched = self._waist_delta_match_d435i_u(ee, u_tgt)
             if matched is not None:
                 dw, err = matched
-                cur = float(self._joint_pos.get("waist", 0.0))
+                cur = self._jget("waist", 0.0)
                 visual = self._clip_waist(cur + dw)
                 if abs(_wrap_pi(visual - kinematic)) <= math.radians(6.0):
                     self.get_logger().info(
@@ -6770,7 +10712,7 @@ class GraspFromClick(Node):
         if iw < 0 or not self.align_waist:
             return True
         face = self._waist_face_target(xyz)
-        cur = float(self._joint_pos.get("waist", 0.0))
+        cur = self._jget("waist", 0.0)
         delta = _wrap_pi(face - cur)
         cmd = self._clip_waist(cur + float(self.waist_align_gain) * delta)
         self._waist_face = face
@@ -6795,7 +10737,7 @@ class GraspFromClick(Node):
         finally:
             self.seg_dur = old
         if ok:
-            self._joint_pos["waist"] = cmd
+            self._jset("waist", cmd)
             self._waist_face = face
             if not self._sleep_interruptible(0.20, gen):
                 return False
@@ -6823,26 +10765,199 @@ class GraspFromClick(Node):
                 finally:
                     self.seg_dur = old2
                 if ok2:
-                    self._joint_pos["waist"] = cmd2
+                    self._jset("waist", cmd2)
                     self._waist_face = face2
                     self.get_logger().info(
                         f"waist trimmed to {math.degrees(cmd2):.1f} deg"
                     )
         return ok
 
+    def _jname(self, name: str) -> str:
+        if getattr(self, "_nexarm", False):
+            return {
+                "waist": "shoulder_pan",
+                "shoulder": "shoulder_lift",
+                "elbow": "elbow_flex",
+                "wrist_angle": "wrist_flex",
+                "wrist_rotate": "wrist_roll",
+            }.get(name, name)
+        return name
+
+    def _jget(self, name: str, default: float = 0.0) -> float:
+        return float(self._joint_pos.get(self._jname(name), default))
+
+    def _jset(self, name: str, value: float) -> None:
+        self._joint_pos[self._jname(name)] = float(value)
+
     def _joint_index(self, name: str) -> int:
         try:
-            return self.arm_joints.index(name)
+            return self.arm_joints.index(self._jname(name))
         except ValueError:
             return -1
 
-    def _ik_solution_ok(self, q: List[float]) -> bool:
-        """Reject inverted / folded-back poses that swing into the AGX."""
+    def _nexarm_ik_mod(self):
+        mod = getattr(self, "_nexarm_ik", None)
+        if mod is not None:
+            return mod
+        import importlib.util
+
+        candidates = [
+            os.environ.get("GRAB_IT_NEXARM_IK", ""),
+            "/opt/grab_it/nexarm_ik.py",
+            str(Path(__file__).resolve().parent / "nexarm_ik.py"),
+        ]
+        for path in candidates:
+            if path and os.path.isfile(path):
+                spec = importlib.util.spec_from_file_location("nexarm_ik", path)
+                if spec is None or spec.loader is None:
+                    continue
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                self._nexarm_ik = mod
+                return mod
+        raise ImportError("nexarm_ik.py not found")
+
+    def _solve_ik_nexarm(
+        self,
+        pose: PoseStamped,
+        prefer_seed: Optional[List[float]] = None,
+        pitch_pref: Optional[float] = None,
+        *,
+        final_approach: bool = False,
+    ) -> Optional[List[float]]:
+        """5-DOF position IK in the arm base. GUI writes the result to USB."""
+        ik = self._nexarm_ik_mod()
+        x = float(pose.pose.position.x)
+        y = float(pose.pose.position.y)
+        z = float(pose.pose.position.z)
+        names = list(self.arm_joints)
+        if prefer_seed is not None and len(prefer_seed) == len(names):
+            seed_real = {n: float(v) for n, v in zip(names, prefer_seed)}
+        else:
+            seed_real = {n: float(self._joint_pos.get(n, 0.0)) for n in names}
+        seed = ik.real_to_model_q(seed_real)
+        wr = float(seed.get("wrist_roll", 0.0))
+        pitch = (
+            float(pitch_pref)
+            if pitch_pref is not None
+            else (
+                float(self._nexarm_pitch)
+                if self._nexarm_pitch is not None
+                else float(ik.ee_pitch_q(seed))
+            )
+        )
+        sol_m = ik.ik_position(
+            x,
+            y,
+            z,
+            wr,
+            seed=seed,
+            pitch_pref=pitch,
+            tool=float(self.nexarm_tcp_m),
+            avoid_create3=True,
+        )
+        if sol_m is None:
+            # Fallback: seed-nearest free pitch.
+            sol_m = ik.ik_position(
+                x,
+                y,
+                z,
+                wr,
+                seed=seed,
+                pitch_pref=None,
+                tool=float(self.nexarm_tcp_m),
+                avoid_create3=True,
+            )
+        if sol_m is None:
+            self.get_logger().warn(
+                f"nexarm IK failed at ({x:.3f},{y:.3f},{z:.3f})"
+            )
+            return None
+        cand = ik.model_to_real_q(sol_m)
+        q = [float(cand[n]) for n in names]
+        if not self._ik_solution_ok(q, final_approach=final_approach):
+            self.get_logger().warn(
+                f"nexarm IK gated at ({x:.3f},{y:.3f},{z:.3f}) "
+                f"q={[round(v, 3) for v in q]}"
+            )
+            return None
+        self.get_logger().info(
+            f"nexarm IK q={[round(v, 3) for v in q]} "
+            f"xyz=({x:.3f},{y:.3f},{z:.3f}) pitch={pitch:.2f}"
+        )
+        return q
+
+    def _nexarm_keepout_xyz(self) -> Optional[Tuple[float, float, float]]:
+        """Object keep-out for the wrist pan + D435i housing."""
+        snap = self._nexarm_click_snap or {}
+        g = None
+        if self._nexarm_plan is not None:
+            g = self._nexarm_plan.get("grasp_xyz")
+        g = g or snap.get("xyz") or self._viz_xyz or self._last_xyz
+        if g is None:
+            return None
+        return (float(g[0]), float(g[1]), float(g[2]))
+
+    def _ik_solution_ok(
+        self, q: List[float], *, final_approach: bool = False
+    ) -> bool:
+        """Reject inverted / folded-back poses that swing into the AGX.
+
+        ``final_approach``: after the tip has reached the planned camera-clear
+        tip (insert_short), allow the last centimetres toward the click without
+        the object-column camera ban. Create3/payload, wrist soft-stop, floor,
+        and tool-axis gates still apply.
+        """
+        if getattr(self, "_nexarm", False):
+            if any(abs(float(v)) > 2.0 for v in q):
+                return False
+            iwf = self._joint_index("wrist_flex")
+            if iwf >= 0:
+                wf = float(q[iwf])
+                if wf < float(self.nexarm_wrist_flex_min) - 1e-6:
+                    return False
+                if wf > float(self.nexarm_wrist_flex_max) + 1e-6:
+                    return False
+            try:
+                ik = self._nexarm_ik_mod()
+                q_real = {n: float(v) for n, v in zip(self.arm_joints, q)}
+                q_m = ik.real_to_model_q(q_real)
+                if ik.q_hits_create3(q_m):
+                    return False
+                tip = ik.fk_xyz_q(q_m, tool=float(self.nexarm_tcp_m))
+                if float(tip[2]) < -0.18:
+                    return False
+                ax = ik.tool_axis_q(q_m)
+                # Tool should point generally away from the base (+radial).
+                if float(tip[0]) * float(ax[0]) + float(tip[1]) * float(ax[1]) < -0.15:
+                    return False
+                pan = (
+                    float(self._pan_pos)
+                    if self._pan_pos is not None
+                    else float(self.pan_lock)
+                )
+                keep = self._nexarm_keepout_xyz()
+                if not ik.wrist_camera_clear(
+                    q_m,
+                    pan,
+                    keepout_xyz=keep,
+                    keepout_r=0.055,
+                    tool=float(self.nexarm_tcp_m),
+                    column_keepout=not bool(final_approach),
+                ):
+                    return False
+            except Exception as exc:
+                self.get_logger().warn(f"nexarm gate check failed: {exc}")
+                return False
+            return True
         ia = self._joint_index("wrist_angle")
         ir = self._joint_index("wrist_rotate")
         ish = self._joint_index("shoulder")
         if ia >= 0:
             if q[ia] < self.wrist_angle_min or q[ia] > self.wrist_angle_max:
+                return False
+            cap = getattr(self, "_floor_wrist_max", None)
+            if cap is not None and float(q[ia]) > float(cap):
                 return False
         if ir >= 0:
             if abs(q[ir]) > self.wrist_rotate_max:
@@ -6911,6 +11026,8 @@ class GraspFromClick(Node):
         fast: bool = False,
     ) -> Optional[List[float]]:
         """Try MoveIt IK; prefer non-inverted wrists without stalling."""
+        if getattr(self, "_nexarm", False):
+            return self._solve_ik_nexarm(pose, prefer_seed)
         if not self._wait_ik(gen):
             if not self._is_cancelled(gen):
                 self.get_logger().error("compute_ik not available")
@@ -6943,6 +11060,16 @@ class GraspFromClick(Node):
                 s2[iw] = self._waist_face
             seeded.append(s2)
         seeds = seeded
+        if getattr(self, "_floor_wrist_max", None) is not None:
+            ia = self._joint_index("wrist_angle")
+            down: List[List[float]] = []
+            for s in seeded:
+                for wa in (-1.20, -1.45, -0.95):
+                    s2 = list(s)
+                    if ia >= 0:
+                        s2[ia] = wa
+                    down.append(s2)
+            seeds = down + seeded
         if self.ee_link.endswith("ee_gripper_link"):
             arm = self.ee_link.replace("ee_gripper_link", "ee_arm_link")
             if self._object_low:
@@ -7112,6 +11239,71 @@ class GraspFromClick(Node):
         )
         return None
 
+    def _solve_floor_jaw_ik(
+        self,
+        contact: Tuple[float, float, float],
+        gen: int,
+        prefer_seed: Optional[List[float]] = None,
+    ) -> Tuple[Optional[List[float]], Tuple[float, float, float]]:
+        """Jaws pitched down at the click height.
+
+        The clicked floor point is often a few centimeters past the pose
+        where the wrist can still point down. A flat solution at that
+        radius closes above the pole. Walk in along the click ray, at the
+        same height, until the wrist is at least 0.80 rad below level.
+        """
+        r = math.hypot(float(contact[0]), float(contact[1]))
+        if r < 1e-4:
+            return None, contact
+        ux = float(contact[0]) / r
+        uy = float(contact[1]) / r
+        yaw = math.atan2(float(contact[1]), float(contact[0]))
+        i_w = self._joint_index("waist")
+        i_s = self._joint_index("shoulder")
+        i_a = self._joint_index("wrist_angle")
+        i_r = self._joint_index("wrist_rotate")
+        # These seeds are the jaw-down solutions MoveIt returns a few
+        # centimeters inside this click. The exact point has no such pose,
+        # and querying it leaves the IK client hung.
+        poses = (
+            (0.05, 1.83, -0.85),
+            (0.06, 1.80, -0.97),
+            (0.05, 1.71, -1.00),
+        )
+        self._floor_wrist_max = -0.80
+        try:
+            for back, sh, wa in poses:
+                if self._is_cancelled(gen):
+                    return None, contact
+                if r - back < 0.12:
+                    continue
+                xyz = (ux * (r - back), uy * (r - back), float(contact[2]))
+                seed = [0.0] * len(self.arm_joints)
+                if i_w >= 0:
+                    seed[i_w] = yaw
+                if i_s >= 0:
+                    seed[i_s] = sh
+                if i_a >= 0:
+                    seed[i_a] = wa
+                if i_r >= 0:
+                    seed[i_r] = 0.0
+                q, _code = self._ik_once(
+                    self._pose_at(xyz, 0.0), self.ee_link, seed, gen
+                )
+                if q is None or not self._ik_solution_ok(q):
+                    continue
+                self.get_logger().info(
+                    f"floor jaw xyz=({xyz[0]:.3f},{xyz[1]:.3f},{xyz[2]:.3f}) "
+                    f"back={back:.3f} q={[round(v, 3) for v in q]}"
+                )
+                return q, xyz
+        finally:
+            self._floor_wrist_max = None
+        self.get_logger().warn(
+            "floor jaw IK failed — no down-wrist pose within 8 cm of the click"
+        )
+        return None, contact
+
     def _solve_grasp_contact_ik(
         self,
         contact: Tuple[float, float, float],
@@ -7120,6 +11312,8 @@ class GraspFromClick(Node):
         prefer_seed: Optional[List[float]] = None,
     ) -> Tuple[Optional[List[float]], Tuple[float, float, float]]:
         """Prefer exact contact; short walk-back toward pre; else caller uses pre."""
+        if self._object_low:
+            return self._solve_floor_jaw_ik(contact, gen, prefer_seed)
         # Seeded from pre — usually enough without the old 16×2s walk.
         q = self._solve_ik(
             self._pose_at(contact, 0.0),
@@ -7181,7 +11375,7 @@ class GraspFromClick(Node):
 
         fut = self._ik_cli.call_async(req)
         t0 = time.time()
-        while not fut.done() and time.time() - t0 < to + 1.0:
+        while not fut.done() and time.time() - t0 < to + 2.5:
             if self._is_cancelled(gen):
                 return None, None
             time.sleep(0.03)
@@ -7221,13 +11415,24 @@ class GraspFromClick(Node):
                 return False
             safe.append(q2)
         waypoints = safe
-        if self._use_traj and self._traj_cli.wait_for_server(timeout_sec=2.0):
-            if self._send_traj_action(waypoints, gen):
-                return True
-            if self._is_cancelled(gen):
-                return False
-            self.get_logger().warn("Trajectory action failed — falling back to joint_group")
-        return self._send_joint_group_path(waypoints, gen)
+        q_cur = [float(self._joint_pos.get(j, 0.0)) for j in self.arm_joints]
+        delta = 0.0
+        for q in waypoints:
+            delta = max(
+                delta,
+                max(abs(float(g) - float(c)) for c, g in zip(q_cur, q)),
+            )
+        old_dur = self.seg_dur
+        self.seg_dur = max(old_dur, min(6.0, delta / 0.40))
+        self.get_logger().info(
+            f"traj send n={len(waypoints)} dur={self.seg_dur:.2f}s "
+            f"q={[round(float(v), 3) for v in waypoints[-1]]}"
+        )
+        try:
+            return self._send_joint_group_path(waypoints, gen)
+        finally:
+            self.seg_dur = old_dur
+            self.get_logger().info("traj send done")
 
     def _send_traj_action(
         self, waypoints: List[List[float]], gen: int
@@ -7274,36 +11479,1111 @@ class GraspFromClick(Node):
         result = result_fut.result().result
         return int(getattr(result, "error_code", 0)) == 0
 
+    def _obstacle_api(self):
+        mod = getattr(self, "_obstacle_api_mod", None)
+        if mod is not None:
+            return mod
+        path = Path(__file__).resolve().parent / "nexarm_obstacle.py"
+        spec = importlib.util.spec_from_file_location("nexarm_obstacle", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"nexarm_obstacle.py missing at {path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self._obstacle_api_mod = mod
+        return mod
+
+    def _stop_plan_api(self):
+        mod = getattr(self, "_stop_plan_mod", None)
+        if mod is not None:
+            return mod
+        path = Path(__file__).resolve().parent / "nexarm_stop_plan.py"
+        spec = importlib.util.spec_from_file_location("nexarm_stop_plan", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"nexarm_stop_plan.py missing at {path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self._stop_plan_mod = mod
+        return mod
+
+    def _safety_gate_api(self):
+        mod = getattr(self, "_safety_gate_mod", None)
+        if mod is not None:
+            return mod
+        path = Path(__file__).resolve().parent / "nexarm_safety_gate.py"
+        spec = importlib.util.spec_from_file_location(
+            "nexarm_safety_gate", path
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"nexarm_safety_gate.py missing at {path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self._safety_gate_mod = mod
+        return mod
+
+    def _ensure_gate_thread(self) -> None:
+        t = getattr(self, "_gate_thread", None)
+        if t is not None and t.is_alive():
+            return
+        self._gate_stop = False
+        self._gate_thread = threading.Thread(
+            target=self._gate_loop, name="nexarm_safety_gate", daemon=True
+        )
+        self._gate_thread.start()
+
+    def _gate_arm_for_transit(self, plan: Optional[dict] = None) -> None:
+        """Arm the transit depth gate; owns depth polling while armed."""
+        gate_api = self._safety_gate_api()
+        ik = self._nexarm_ik_mod()
+        self._ensure_gate_thread()
+        self._safety_trip = None
+        self._obstacle_stop_reason = None
+        # Fresh depth for baseline + ROI.
+        self._poll_depth()
+        with self._lock:
+            depth = None if self._depth is None else self._depth.copy()
+            info = self._info
+        if depth is None or info is None:
+            self.get_logger().warn("gate arm: no depth — using full-frame ROI")
+            h, w = 480, 848
+            depth = np.full((h, w), 0.80, dtype=np.float64)
+        else:
+            h, w = depth.shape[:2]
+        fx, fy = float(info.k[0]) if info is not None else 600.0, (
+            float(info.k[4]) if info is not None else 600.0
+        )
+        cx, cy = float(info.k[2]) if info is not None else w * 0.5, (
+            float(info.k[5]) if info is not None else h * 0.5
+        )
+        if info is not None:
+            iw = int(info.width) if info.width else w
+            ih = int(info.height) if info.height else h
+            if iw > 1 and ih > 1 and (iw != w or ih != h):
+                sx = (w - 1) / float(iw - 1)
+                sy = (h - 1) / float(ih - 1)
+                fx, cx = fx * sx, cx * sx
+                fy, cy = fy * sy, cy * sy
+        q_real = {
+            n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints
+        }
+        pan = (
+            float(self._pan_pos)
+            if self._pan_pos is not None
+            else float(self.nexarm_pan_approach_rad)
+        )
+        q_m = ik.real_to_model_q(q_real)
+        origin, R = ik.camera_pose_q(q_m, pan)
+        tip = ik.fk_xyz_q(q_m, tool=float(self.nexarm_tcp_m))
+        # Fingertip for envelope (past TCP).
+        axis = ik.tool_axis_q(q_m)
+        tip_ext = float(self.nexarm_fingertip_m) - float(self.nexarm_tcp_m)
+        tip_pt = (
+            float(tip[0]) + tip_ext * float(axis[0]),
+            float(tip[1]) + tip_ext * float(axis[1]),
+            float(tip[2]) + tip_ext * float(axis[2]),
+        )
+        roi = gate_api.project_envelope_roi(
+            tip=tip_pt,
+            axis=axis,
+            origin=origin,
+            R_opt=R,
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
+            width=w,
+            height=h,
+        )
+        if roi is None:
+            roi = gate_api.fallback_roi(w, h)
+        support_z = float("-inf")
+        snap = self._nexarm_click_snap or {}
+        if plan is not None:
+            support_z = float(plan.get("z_lo", float("-inf"))) - 0.01
+        elif isinstance(snap.get("xyz"), (tuple, list)):
+            support_z = float(snap["xyz"][2]) - 0.08
+        st = gate_api.SafetyGateState(
+            trip_m=float(self.nexarm_gate_trip_m),
+            min_pix=int(self.nexarm_gate_min_pix),
+            hole_jump=float(self.nexarm_gate_hole_jump),
+        )
+        ignore_s = None
+        ignore_u = None
+        if plan is not None:
+            ignore_s = float(plan.get("s_near", float("nan")))
+            uh = plan.get("u_hat")
+            if isinstance(uh, (tuple, list)) and len(uh) >= 2:
+                ignore_u = (float(uh[0]), float(uh[1]))
+            if not math.isfinite(ignore_s):
+                ignore_s = None
+                ignore_u = None
+        tip_s0 = None
+        if ignore_u is not None:
+            tip_s0 = float(tip_pt[0]) * float(ignore_u[0]) + float(
+                tip_pt[1]
+            ) * float(ignore_u[1])
+        st.arm(
+            depth=depth,
+            roi=roi,
+            support_z=support_z,
+            origin=origin,
+            R_opt=R,
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
+            ignore_s_near=ignore_s,
+            ignore_u_hat=ignore_u,
+            ignore_s_min=(
+                float(tip_s0) + 0.05 if tip_s0 is not None else None
+            ),
+        )
+        self._gate_state = st
+        self._gate_cam = {
+            "origin": origin,
+            "R": R,
+            "fx": fx,
+            "fy": fy,
+            "cx": cx,
+            "cy": cy,
+            "pan": pan,
+        }
+        self._gate_armed = True
+        self.get_logger().info(
+            f"transit gate armed roi={roi} support_z={support_z:.3f} "
+            f"base_inv={st.baseline_invalid:.2f}"
+        )
+
+    def _gate_disarm(self) -> None:
+        self._gate_armed = False
+
+    def _gate_loop(self) -> None:
+        """Owns depth polling while the transit gate is armed."""
+        while not bool(getattr(self, "_gate_stop", False)):
+            if not bool(getattr(self, "_gate_armed", False)):
+                time.sleep(0.05)
+                continue
+            # Fast depth spin (gate owns polling — motion loop must not starve).
+            ex = getattr(self, "_depth_exec", None)
+            if ex is not None:
+                try:
+                    with self._depth_poll_lock:
+                        for _ in range(4):
+                            ex.spin_once(timeout_sec=0.0)
+                    self._depth_poll_stamp = time.monotonic()
+                except Exception:
+                    pass
+            st = getattr(self, "_gate_state", None)
+            if st is None or st.tripped:
+                time.sleep(0.02)
+                continue
+            with self._lock:
+                if self._depth is None:
+                    time.sleep(0.02)
+                    continue
+                depth = self._depth.copy()
+            cam = dict(getattr(self, "_gate_cam", None) or {})
+            # Refresh FK camera pose each frame — a stale arm-time pose
+            # mis-unprojects live depth and breaks the object-column ignore.
+            try:
+                ik = self._nexarm_ik_mod()
+                q_real = {
+                    n: float(self._joint_pos.get(n, 0.0))
+                    for n in self.arm_joints
+                }
+                pan = float(
+                    cam.get(
+                        "pan",
+                        self._pan_pos
+                        if self._pan_pos is not None
+                        else self.nexarm_pan_approach_rad,
+                    )
+                )
+                q_m = ik.real_to_model_q(q_real)
+                origin, R = ik.camera_pose_q(q_m, pan)
+                cam["origin"] = origin
+                cam["R"] = R
+                self._gate_cam = cam
+                tip = ik.fk_xyz_q(q_m, tool=float(self.nexarm_fingertip_m))
+                uh = st.ignore_u_hat
+                if uh is not None:
+                    tip_s = float(tip[0]) * float(uh[0]) + float(tip[1]) * float(
+                        uh[1]
+                    )
+                    st.set_tip_s_min(tip_s)
+            except Exception:
+                pass
+            why = st.update(
+                depth,
+                origin=cam.get("origin"),
+                R_opt=cam.get("R"),
+                fx=float(cam.get("fx", 600.0)),
+                fy=float(cam.get("fy", 600.0)),
+                cx=float(cam.get("cx", 320.0)),
+                cy=float(cam.get("cy", 240.0)),
+            )
+            if why:
+                hold_q = self._last_cmd_q
+                if hold_q is None:
+                    hold_q = [
+                        float(self._joint_pos.get(j, 0.0))
+                        for j in self.arm_joints
+                    ]
+                try:
+                    hold = JointGroupCommand()
+                    hold.name = "arm"
+                    hold.cmd = [float(v) for v in hold_q]
+                    self._arm_pub.publish(hold)
+                except Exception as exc:
+                    self.get_logger().warn(f"gate hold publish: {exc}")
+                self._safety_trip = why
+                self._obstacle_stop_reason = why
+                self._publish_status("error", f"Obstacle — gate: {why}")
+                self.get_logger().warn(f"transit gate trip: {why}")
+                self._gate_armed = False
+            time.sleep(0.03)
+
+    def _build_nexarm_stop_plan(
+        self, click_xyz: Optional[Tuple[float, float, float]] = None
+    ) -> Tuple[Optional[dict], str]:
+        """Click-time stop plan + clear-path (no motion)."""
+        snap = self._nexarm_click_snap or {}
+        depth = snap.get("depth")
+        if depth is None:
+            self._snapshot_depth()
+            with self._lock:
+                depth = None if self._depth is None else self._depth.copy()
+        if depth is None:
+            return None, "no depth"
+        xyz = click_xyz or snap.get("xyz") or self._viz_xyz or self._last_xyz
+        if xyz is None:
+            return None, "no click"
+        xyz = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+        origin = snap.get("cam_origin")
+        R = snap.get("cam_R")
+        ik = self._nexarm_ik_mod()
+        sp = self._stop_plan_api()
+        pan = float(
+            snap.get(
+                "pan",
+                self._pan_pos
+                if self._pan_pos is not None
+                else self.nexarm_pan_approach_rad,
+            )
+        )
+        q_real = snap.get("q_real") or {
+            n: float(self._joint_pos.get(n, 0.0)) for n in self.arm_joints
+        }
+        if origin is None or R is None:
+            origin, R = ik.camera_pose_q(ik.real_to_model_q(q_real), pan)
+        fx = float(snap.get("fx", 600.0))
+        fy = float(snap.get("fy", 600.0))
+        cx = float(snap.get("cx", 320.0))
+        cy = float(snap.get("cy", 240.0))
+        u_px = int(snap.get("u_px", 0))
+        v_px = int(snap.get("v_px", 0))
+        if u_px <= 0 and v_px <= 0 and "u" in snap:
+            h, w = depth.shape[:2]
+            u_px = int(round(float(snap["u"]) * max(1, w - 1)))
+            v_px = int(round(float(snap["v"]) * max(1, h - 1)))
+        z_m = float(snap.get("z_m", float("nan")))
+        if not math.isfinite(z_m):
+            z_m = float(self._near_depth(depth, u_px, v_px) or 0.4)
+        q_now = [float(self._joint_pos.get(j, 0.0)) for j in self.arm_joints]
+        wr = float(q_real.get("wrist_roll", q_now[-1] if q_now else 0.0))
+
+        def _solve(xyz_t, seed):
+            return self._solve_ik_nexarm(
+                self._pose_at(
+                    (float(xyz_t[0]), float(xyz_t[1]), float(xyz_t[2])), 0.0
+                ),
+                prefer_seed=list(seed),
+                pitch_pref=0.0,
+                final_approach=True,
+            )
+
+        def _q_to_model(q):
+            return ik.real_to_model_q(
+                {n: float(v) for n, v in zip(self.arm_joints, q)}
+            )
+
+        plan, why = sp.build_stop_plan(
+            depth=np.asarray(depth),
+            u_px=u_px,
+            v_px=v_px,
+            click_z=z_m,
+            click_xyz=xyz,
+            origin=origin,
+            R_opt=R,
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
+            q_now=q_now,
+            pan=pan,
+            wrist_roll=wr,
+            solve_ik=_solve,
+            q_to_model=_q_to_model,
+            ik_mod=ik,
+            gap_m=float(self.nexarm_stop_gap_m),
+            pre_back_m=float(self.nexarm_pre_back_m),
+            tcp_m=float(self.nexarm_tcp_m),
+            fingertip_m=float(self.nexarm_fingertip_m),
+            corridor_margin_m=float(self.nexarm_corridor_margin_m),
+        )
+        if plan is not None:
+            self._nexarm_stop_plan = plan
+        return plan, why
+
+    def _nexarm_stop_pose_approach(
+        self,
+        gen: int,
+        click_xyz: Tuple[float, float, float],
+    ) -> Tuple[Optional[Tuple[float, float, float]], str]:
+        """Approach-only: plan once, transit with gate, open-loop final, hold."""
+        snap = self._nexarm_click_snap or {}
+        pan = float(
+            snap.get(
+                "pan",
+                getattr(self, "_nexarm_active_pan", None)
+                or self.nexarm_pan_approach_rad,
+            )
+        )
+        self._ensure_pan_tilted(pan)
+        self._nexarm_active_pan = pan
+        self._nexarm_pan_cmd = pan
+        self._lock_pan()
+        self._nexarm_pitch = 0.0
+
+        self._publish_status(
+            "planning", "Stop-pose plan + clear-path…", click_xyz
+        )
+        plan, why = self._build_nexarm_stop_plan(click_xyz)
+        if plan is None:
+            return None, why or "plan_fail"
+        if not plan.get("clear", False):
+            self._publish_status(
+                "error", f"Path blocked — {plan.get('clear_msg', why)}"
+            )
+            return None, plan.get("clear_msg", "blocked")
+        gap_cm = float(plan.get("gap_m", self.nexarm_stop_gap_m)) * 100.0
+        self.get_logger().info(
+            f"stop plan s_near={plan['s_near']:.3f} "
+            f"z=[{plan['z_lo']:.3f},{plan['z_hi']:.3f}] "
+            f"pre={tuple(round(v, 3) for v in plan['pre_xyz'])} "
+            f"stop={tuple(round(v, 3) for v in plan['stop_xyz'])} "
+            f"tip={tuple(round(v, 3) for v in plan['tip_xyz'])} "
+            f"steps={plan['n_step']} clear={plan['clear_msg']}"
+        )
+
+        # Transit to pre with gate armed.
+        self._publish_status(
+            "grasping",
+            f"Transit to pre (gate on, stop gap {gap_cm:.0f} cm)…",
+            click_xyz,
+        )
+        self._gate_arm_for_transit(plan)
+        old = self.seg_dur
+        self.seg_dur = max(1.6, min(3.5, old))
+        try:
+            ok = self._send_trajectory([list(plan["q_pre"])], gen)
+        finally:
+            self.seg_dur = old
+            self._gate_disarm()
+        if self._safety_trip:
+            return None, f"gate:{self._safety_trip}"
+        if not ok or self._is_cancelled(gen):
+            return None, "pre_move_fail" if not ok else "cancelled"
+        for n, v in zip(self.arm_joints, plan["q_pre"]):
+            self._joint_pos[n] = float(v)
+        self._retreat_q = [float(v) for v in plan["q_pre"]]
+
+        # Pre-pose check: object not closer than planned by >2 cm.
+        self._poll_depth()
+        time.sleep(0.15)
+        self._poll_depth()
+        with self._lock:
+            depth = None if self._depth is None else self._depth.copy()
+        if depth is not None and self._gate_state is not None:
+            gate_api = self._safety_gate_api()
+            cam = self._gate_cam or {}
+            st = self._gate_state
+            ik = self._nexarm_ik_mod()
+            q_m = ik.real_to_model_q(
+                {
+                    n: float(self._joint_pos.get(n, 0.0))
+                    for n in self.arm_joints
+                }
+            )
+            # Refresh FK cam at the pre pose before measuring.
+            try:
+                origin, R = ik.camera_pose_q(q_m, pan)
+                cam["origin"] = origin
+                cam["R"] = R
+                self._gate_cam = cam
+            except Exception:
+                pass
+            if st.roi is not None:
+                # Re-apply gate with object/tip ignores. Absolute close_pix
+                # always fires at pre (object is ~15–20 cm away); only holes
+                # abort here. Near-face distance is checked below.
+                tip_s = None
+                uh = plan.get("u_hat")
+                try:
+                    tip = ik.fk_xyz_q(q_m, tool=float(self.nexarm_fingertip_m))
+                    tip_s = float(tip[0]) * float(uh[0]) + float(tip[1]) * float(
+                        uh[1]
+                    )
+                    st.set_tip_s_min(tip_s)
+                except Exception:
+                    pass
+                ev = gate_api.evaluate_frame(
+                    depth,
+                    st.roi,
+                    trip_m=float(self.nexarm_gate_trip_m),
+                    min_pix=int(self.nexarm_gate_min_pix),
+                    hole_jump=float(self.nexarm_gate_hole_jump),
+                    baseline_invalid_frac=st.baseline_invalid,
+                    support_z=st.support_z,
+                    origin=cam.get("origin"),
+                    R_opt=cam.get("R"),
+                    fx=float(cam.get("fx", 600.0)),
+                    fy=float(cam.get("fy", 600.0)),
+                    cx=float(cam.get("cx", 320.0)),
+                    cy=float(cam.get("cy", 240.0)),
+                    ignore_s_near=float(plan["s_near"]),
+                    ignore_u_hat=plan["u_hat"],
+                    ignore_s_min=(
+                        float(tip_s) + 0.05 if tip_s is not None else None
+                    ),
+                )
+                if (
+                    ev.get("trip")
+                    and ev.get("reason")
+                    and "holes" in str(ev.get("reason"))
+                ):
+                    self._publish_status(
+                        "error",
+                        f"Pre-pose gate — {ev.get('reason')}",
+                        click_xyz,
+                    )
+                    return None, f"pre_gate:{ev.get('reason')}"
+                # Live near face from gate ROI cloud vs planned s_near.
+                live_s = None
+                try:
+                    sp = self._stop_plan_api()
+                    u0, v0, u1, v1 = st.roi
+                    cam_o = cam.get("origin")
+                    cam_R = cam.get("R")
+                    if cam_o is not None and cam_R is not None:
+                        ux, uy = plan["u_hat"]
+                        dots = []
+                        for vv in range(v0, v1, 2):
+                            for uu in range(u0, u1, 2):
+                                z = float(depth[vv, uu])
+                                if not math.isfinite(z) or z < 0.08 or z > 1.5:
+                                    continue
+                                p = sp.unproject_pixel(
+                                    uu,
+                                    vv,
+                                    z,
+                                    fx=float(cam.get("fx", 600.0)),
+                                    fy=float(cam.get("fy", 600.0)),
+                                    cx=float(cam.get("cx", 320.0)),
+                                    cy=float(cam.get("cy", 240.0)),
+                                    origin=cam_o,
+                                    R_opt=cam_R,
+                                )
+                                if float(p[2]) < float(st.support_z):
+                                    continue
+                                dots.append(
+                                    float(p[0]) * ux + float(p[1]) * uy
+                                )
+                        if len(dots) >= 8:
+                            live_s = float(np.percentile(np.asarray(dots), 5))
+                except Exception as exc:
+                    self.get_logger().warn(f"pre-pose near-face: {exc}")
+                if live_s is not None:
+                    planned_s = float(plan["s_near"])
+                    self.get_logger().info(
+                        f"pre-pose check live_s_near={live_s:.3f} "
+                        f"planned={planned_s:.3f} "
+                        f"near_z={ev.get('near_z')}"
+                    )
+                    if live_s < planned_s - 0.02:
+                        self._publish_status(
+                            "error",
+                            f"Object closer than planned "
+                            f"(live s={live_s:.2f} < {planned_s-0.02:.2f})",
+                            click_xyz,
+                        )
+                        return None, "pre_closer"
+                else:
+                    self.get_logger().warn(
+                        "pre-pose: could not measure near face — continuing"
+                    )
+        else:
+            self.get_logger().warn(
+                "pre-pose: no fresh depth for re-check — continuing"
+            )
+
+        # Final open-loop line, gate off.
+        self._publish_status(
+            "grasping",
+            f"Final approach (open-loop, hold {gap_cm:.0f} cm short)…",
+            click_xyz,
+        )
+        wps = list(plan["waypoints"][1:])  # skip q_pre (already there)
+        if not wps:
+            wps = [list(plan["q_stop"])]
+        old = self.seg_dur
+        self.seg_dur = 1.2
+        try:
+            ok = self._send_trajectory(wps, gen)
+        finally:
+            self.seg_dur = old
+        if self._safety_trip:
+            return None, f"gate:{self._safety_trip}"
+        if not ok or self._is_cancelled(gen):
+            return None, "final_move_fail" if not ok else "cancelled"
+        q_last = wps[-1]
+        for n, v in zip(self.arm_joints, q_last):
+            self._joint_pos[n] = float(v)
+        self._retreat_q = [float(v) for v in q_last]
+        ee = tuple(float(v) for v in plan["stop_xyz"])
+        self.get_logger().info(
+            f"stop-pose done ee=({ee[0]:.3f},{ee[1]:.3f},{ee[2]:.3f}) "
+            f"tip_planned=({plan['tip_xyz'][0]:.3f},"
+            f"{plan['tip_xyz'][1]:.3f},{plan['tip_xyz'][2]:.3f}) "
+            f"s_near={plan['s_near']:.3f} gap={plan['gap_m']:.3f}"
+        )
+        return ee, "aligned"
+
+    def _nexarm_obstacle_at(self, q: List[float]) -> Optional[str]:
+        """Reason string if this commanded pose advances the tip into a solid.
+
+        Retreat (tip moving opposite the tool axis) is not checked. The first
+        sample only records the pose so a segment can tell advance from retreat.
+        """
+        if not getattr(self, "_nexarm", False) or not self.nexarm_obstacle_stop:
+            return None
+        if not getattr(self, "_obstacle_armed", True):
+            return None
+        prev = self._obstacle_q_prev
+        self._obstacle_q_prev = [float(v) for v in q]
+        if prev is None or len(prev) != len(q):
+            return None
+        ik = self._nexarm_ik_mod()
+        q_real = {n: float(v) for n, v in zip(self.arm_joints, q)}
+        q_m = ik.real_to_model_q(q_real)
+        axis = ik.tool_axis_q(q_m)
+        tip = ik.fk_xyz_q(q_m, tool=float(self.nexarm_tcp_m))
+        q_prev = {n: float(v) for n, v in zip(self.arm_joints, prev)}
+        tip_prev = ik.fk_xyz_q(
+            ik.real_to_model_q(q_prev), tool=float(self.nexarm_tcp_m)
+        )
+        ds = (
+            (float(tip[0]) - float(tip_prev[0])) * float(axis[0])
+            + (float(tip[1]) - float(tip_prev[1])) * float(axis[1])
+            + (float(tip[2]) - float(tip_prev[2])) * float(axis[2])
+        )
+        # Skip only true retreat. Slow creeps move <0.5 mm between samples
+        # once seg_dur stretches, so an advance threshold would blind the watch.
+        if ds < -5e-4:
+            return None
+        pan = (
+            float(self._pan_pos)
+            if self._pan_pos is not None
+            else float(self.nexarm_pan_approach_rad)
+        )
+        # Depth rays belong to camera_info's optical frame. URDF FK of that
+        # pose disagreed with TF and put the approach axis off the bottle.
+        origin_fk, R_fk_pose = ik.camera_pose_q(q_m, pan)
+        R_fk = (
+            (
+                float(R_fk_pose[0][0]),
+                float(R_fk_pose[0][1]),
+                float(R_fk_pose[0][2]),
+            ),
+            (
+                float(R_fk_pose[1][0]),
+                float(R_fk_pose[1][1]),
+                float(R_fk_pose[1][2]),
+            ),
+            (
+                float(R_fk_pose[2][0]),
+                float(R_fk_pose[2][1]),
+                float(R_fk_pose[2][2]),
+            ),
+        )
+        frame = self._tf_camera_frame(
+            getattr(self, "_depth_frame", "") or self.camera_frame
+        )
+        T_cam = self._tf_matrix(self.planning_frame, frame)
+        origin_tf = None
+        R_tf = None
+        if T_cam is not None:
+            origin_tf = (
+                float(T_cam[0, 3]),
+                float(T_cam[1, 3]),
+                float(T_cam[2, 3]),
+            )
+            R_tf = (
+                (float(T_cam[0, 0]), float(T_cam[0, 1]), float(T_cam[0, 2])),
+                (float(T_cam[1, 0]), float(T_cam[1, 1]), float(T_cam[1, 2])),
+                (float(T_cam[2, 0]), float(T_cam[2, 1]), float(T_cam[2, 2])),
+            )
+        # Stop gate uses TF/FK optical frame only — IMU elevation has been
+        # stuck wrong and warps tip_z. Keep IMU in the log line only.
+        accel = None
+        if (
+            self.nexarm_obstacle_use_imu
+            and self._imu_accel is not None
+            and (time.monotonic() - self._imu_stamp) < 0.30
+        ):
+            accel = self._imu_accel
+        api = self._obstacle_api()
+        R_gate = R_tf if R_tf is not None else R_fk
+        origin = origin_tf if origin_tf is not None else origin_fk
+        _R_imu, elev, src = api.rotation_with_imu(R_gate, accel)
+        R = R_gate
+        cam_src = "tf" if R_tf is not None else "fk"
+        self._poll_depth()
+        with self._lock:
+            if self._depth is None or self._info is None:
+                depth = None
+                info = None
+                age = 1e9
+            else:
+                depth = self._depth.copy()
+                info = self._info
+                age = time.monotonic() - float(self._reach_depth_stamp)
+        if depth is None or info is None or age > 0.60:
+            return "no fresh depth"
+        fx, fy = float(info.k[0]), float(info.k[4])
+        cx, cy = float(info.k[2]), float(info.k[5])
+        h, w = depth.shape[:2]
+        iw = int(info.width) if info.width else w
+        ih = int(info.height) if info.height else h
+        if iw > 1 and ih > 1 and (iw != w or ih != h):
+            sx = (w - 1) / float(iw - 1)
+            sy = (h - 1) / float(ih - 1)
+            fx, cx = fx * sx, cx * sx
+            fy, cy = fy * sy, cy * sy
+
+        def _pix_z_ok(pix) -> bool:
+            return pix is not None and float(pix[2]) > 1e-4
+
+        def _pix_uv_ok(pix) -> bool:
+            if pix is None:
+                return False
+            u, v = float(pix[0]), float(pix[1])
+            # Nearly-coplanar projections blow up to huge uv — treat as no uv.
+            if u < -0.5 * w or u > 1.5 * w or v < -0.5 * h or v > 1.5 * h:
+                return False
+            return True
+
+        pix_tf = (
+            None
+            if origin_tf is None or R_tf is None
+            else api.tip_pixel(
+                origin_tf, R_tf, tip, fx=fx, fy=fy, cx=cx, cy=cy
+            )
+        )
+        pix_fk = api.tip_pixel(
+            origin_fk, R_fk, tip, fx=fx, fy=fy, cx=cx, cy=cy
+        )
+        # Use FK cam pose for unproject + tip_z. Live TF elev has been stuck
+        # (~-46°) while the wrist pitches to -60° on grasp, so axis rays miss
+        # the bottle and the tip plows through.
+        origin, R = origin_fk, R_fk
+        cam_src = "fk"
+        _ = origin_tf  # kept for optional uv below
+        if _pix_z_ok(pix_fk):
+            tip_z = float(pix_fk[2])
+            tip_src = "fk"
+        elif _pix_z_ok(pix_tf):
+            tip_z = float(pix_tf[2])
+            tip_src = "tf"
+        else:
+            tip_z = None
+            tip_src = cam_src
+        tip_uv = None
+        if _pix_uv_ok(pix_fk):
+            tip_uv = (float(pix_fk[0]), float(pix_fk[1]))
+        elif _pix_uv_ok(pix_tf):
+            tip_uv = (float(pix_tf[0]), float(pix_tf[1]))
+        if not self._obstacle_logged:
+            self._obstacle_logged = True
+            uv_s = (
+                f"uv=({tip_uv[0]:.0f},{tip_uv[1]:.0f})"
+                if tip_uv is not None
+                else "uv=?"
+            )
+            self.get_logger().info(
+                f"obstacle watch cam_z={float(origin[2]):.3f} "
+                f"tip_z={tip_z if tip_z is not None else float('nan'):.3f} "
+                f"{uv_s} pan={pan:.2f} elev={math.degrees(elev):.0f}° "
+                f"via={cam_src}/tip_{tip_src} "
+                f"tip=({float(tip[0]):.3f},{float(tip[1]):.3f},{float(tip[2]):.3f})"
+            )
+        hit = api.slab_hit(
+            depth,
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
+            origin=origin,
+            R=R,
+            tip=tip,
+            axis=axis,
+            gap_m=float(self.nexarm_obstacle_gap_m),
+            thick_m=float(self.nexarm_obstacle_thick_m),
+            radius_m=float(self.nexarm_obstacle_radius_m),
+            z_min=float(self.nexarm_obstacle_z_min_m),
+            z_max=float(self.nexarm_obstacle_z_max_m),
+            min_pixels=int(self.nexarm_obstacle_min_pix),
+            roi_half_px=int(self.nexarm_obstacle_roi_half_px),
+            tip_z=tip_z,
+            tip_uv=tip_uv,
+        )
+        if hit is None:
+            now = time.monotonic()
+            if now - float(getattr(self, "_obstacle_miss_log", 0.0)) > 0.8:
+                self._obstacle_miss_log = now
+                near_s = "?"
+                try:
+                    box = None
+                    if tip_uv is not None:
+                        box = api.tip_front_box(
+                            float(tip_uv[0]),
+                            float(tip_uv[1]),
+                            width=w,
+                            height=h,
+                            half_w_px=max(24, int(self.nexarm_obstacle_roi_half_px)),
+                            ahead_px=max(80, int(0.35 * h)),
+                        )
+                    if box is None:
+                        box = api.front_region(
+                            fx=fx,
+                            fy=fy,
+                            cx=cx,
+                            cy=cy,
+                            origin=origin,
+                            R=R,
+                            tip=tip,
+                            axis=axis,
+                            width=w,
+                            height=h,
+                            half_width_m=max(
+                                0.05, float(self.nexarm_obstacle_radius_m)
+                            ),
+                            height_m=0.16,
+                            s_near=0.004,
+                            s_far=max(
+                                0.10, float(self.nexarm_obstacle_gap_m) + 0.06
+                            ),
+                            z_min=min(
+                                float(self.nexarm_obstacle_z_min_m),
+                                max(
+                                    0.03,
+                                    (
+                                        0.5 * float(tip_z)
+                                        if tip_z is not None
+                                        else 0.03
+                                    ),
+                                ),
+                            ),
+                        )
+                    if box is not None:
+                        u0, v0, u1, v1 = box
+                        sub = np.asarray(
+                            depth[v0:v1, u0:u1], dtype=np.float64
+                        )
+                        depth_lo = float(self.nexarm_obstacle_z_min_m)
+                        if tip_z is not None:
+                            depth_lo = min(
+                                depth_lo, max(0.03, float(tip_z) - 0.005)
+                            )
+                        ok = (
+                            np.isfinite(sub)
+                            & (sub > depth_lo)
+                            & (sub < float(self.nexarm_obstacle_z_max_m))
+                        )
+                        if int(ok.sum()) > 0:
+                            near = float(np.percentile(sub[ok], 15))
+                            if tip_z is not None:
+                                near_s = (
+                                    f"near={near:.3f} "
+                                    f"clearance={near - float(tip_z):.3f}"
+                                )
+                            else:
+                                near_s = f"near={near:.3f}"
+                except Exception:
+                    pass
+                uv_s = (
+                    f"uv=({tip_uv[0]:.0f},{tip_uv[1]:.0f})"
+                    if tip_uv is not None
+                    else "uv=?"
+                )
+                self.get_logger().info(
+                    f"obstacle clear tip=({float(tip[0]):.3f},"
+                    f"{float(tip[1]):.3f},{float(tip[2]):.3f}) "
+                    f"tip_z={tip_z if tip_z is not None else float('nan'):.3f} "
+                    f"{uv_s} {near_s} pan={pan:.2f} via={cam_src}"
+                )
+            return None
+        n, s_med, z_med = hit
+        uv_s = (
+            f"uv=({tip_uv[0]:.0f},{tip_uv[1]:.0f})"
+            if tip_uv is not None
+            else "uv=?"
+        )
+        self.get_logger().warn(
+            f"obstacle stop pix={n} clearance={s_med:.3f} depth={z_med:.3f} "
+            f"tip_z={tip_z if tip_z is not None else float('nan'):.3f} {uv_s} "
+            f"pan={pan:.2f} "
+            f"tip=({float(tip[0]):.3f},{float(tip[1]):.3f},{float(tip[2]):.3f})"
+        )
+        return (
+            f"solid {z_med:.2f} m in front of tip "
+            f"(clearance={s_med:.3f} m, n={n}, {cam_src})"
+        )
+
     def _send_joint_group_path(
         self, waypoints: List[List[float]], gen: int
     ) -> bool:
-        """Smoothly interpolate to each waypoint via xs_sdk joint_group (Nano bus)."""
+        """Smoothly interpolate to each waypoint via xs_sdk joint_group (Nano bus).
+
+        Obstacle stopping is owned by the transit safety gate thread. This loop
+        only records the last commanded joints and aborts when ``_safety_trip``
+        is set.
+        """
         rate_hz = 20.0
         dt = 1.0 / rate_hz
+        gate_watch = bool(getattr(self, "_nexarm", False))
+        if gate_watch:
+            self._obstacle_watch = bool(getattr(self, "_gate_armed", False))
         q_cur = [float(self._joint_pos[j]) for j in self.arm_joints]
-        for q_goal in waypoints:
-            if self._is_cancelled(gen):
-                return False
-            steps = max(1, int(self.seg_dur * rate_hz))
-            for s in range(1, steps + 1):
+        self._last_cmd_q = list(q_cur)
+        try:
+            for q_goal in waypoints:
                 if self._is_cancelled(gen):
                     return False
-                a = s / float(steps)
-                q = [c + a * (g - c) for c, g in zip(q_cur, q_goal)]
+                if self._safety_trip:
+                    return False
+                steps = max(1, int(self.seg_dur * rate_hz))
+                q_safe = list(q_cur)
+                for s in range(1, steps + 1):
+                    if self._is_cancelled(gen):
+                        return False
+                    if self._safety_trip:
+                        hold = JointGroupCommand()
+                        hold.name = "arm"
+                        hold.cmd = [float(v) for v in q_safe]
+                        self._arm_pub.publish(hold)
+                        return False
+                    a = s / float(steps)
+                    q = [c + a * (g - c) for c, g in zip(q_cur, q_goal)]
+                    msg = JointGroupCommand()
+                    msg.name = "arm"
+                    msg.cmd = [float(v) for v in q]
+                    self._arm_pub.publish(msg)
+                    self._last_cmd_q = list(q)
+                    q_safe = list(q)
+                    time.sleep(dt)
+                q_cur = list(q_goal)
                 msg = JointGroupCommand()
                 msg.name = "arm"
-                msg.cmd = [float(v) for v in q]
+                msg.cmd = [float(v) for v in q_cur]
                 self._arm_pub.publish(msg)
-                time.sleep(dt)
-            q_cur = list(q_goal)
-            # Hold final
-            msg = JointGroupCommand()
-            msg.name = "arm"
-            msg.cmd = [float(v) for v in q_cur]
-            self._arm_pub.publish(msg)
-            if not self._sleep_interruptible(0.15, gen):
-                return False
-        return True
+                self._last_cmd_q = list(q_cur)
+                if not self._sleep_interruptible(0.15, gen):
+                    return False
+            return True
+        finally:
+            if gate_watch:
+                self._obstacle_watch = False
+
+    def _run_obstacle_test(self, gen: int) -> None:
+        """Creep up to 18 cm along the current aim, stopping inside the tip gap."""
+        try:
+            # Keep the operator's yaw aim (alternate bottle). Drop to bottle
+            # height first — creeping at z≈0.28 hits with the camera housing.
+            ik = self._nexarm_ik_mod()
+            names = list(self.arm_joints)
+            q0 = [float(self._joint_pos.get(n, 0.0)) for n in names]
+            q_m = ik.real_to_model_q(
+                {n: float(v) for n, v in zip(names, q0)}
+            )
+            tip0 = ik.fk_xyz_q(q_m, tool=float(self.nexarm_tcp_m))
+            axis = ik.tool_axis_q(q_m)
+            hx = float(axis[0])
+            hy = float(axis[1])
+            hn = math.hypot(hx, hy)
+            if hn < 1e-6:
+                hx, hy = 1.0, 0.0
+            else:
+                hx, hy = hx / hn, hy / hn
+            pitch = 0.0
+            self._nexarm_pitch = float(pitch)
+            # Unarmed reposition: extend for IK room, then drop to bottle height.
+            # Creeping at z≈0.28 flies over the bottle with tip_z in the near
+            # deadzone and never exercises the stop.
+            self._obstacle_armed = False
+
+            def _move_tip(xyz, label: str) -> str:
+                """Return 'ok', 'skip' (no IK), 'fail', or 'cancel'."""
+                nonlocal q0, tip0
+                solved = self._solve_ik_nexarm(
+                    self._pose_at(xyz, 0.0),
+                    prefer_seed=q0,
+                    pitch_pref=pitch,
+                    final_approach=True,
+                )
+                if solved is None:
+                    self.get_logger().warn(
+                        f"obstacle test: no IK for {label} "
+                        f"({float(xyz[0]):.3f},{float(xyz[1]):.3f},{float(xyz[2]):.3f})"
+                    )
+                    return "skip"
+                old = self.seg_dur
+                self.seg_dur = max(1.6, float(old))
+                try:
+                    if not self._send_trajectory([solved], gen):
+                        self._publish_status(
+                            "error", f"Obstacle test: {label} move failed"
+                        )
+                        return "fail"
+                finally:
+                    self.seg_dur = old
+                if self._is_cancelled(gen):
+                    self._publish_status("cancelled", "Obstacle test cancelled")
+                    return "cancel"
+                time.sleep(0.25)
+                q0 = [float(self._joint_pos.get(n, 0.0)) for n in names]
+                tip0 = ik.fk_xyz_q(
+                    ik.real_to_model_q(
+                        {n: float(v) for n, v in zip(names, q0)}
+                    ),
+                    tool=float(self.nexarm_tcp_m),
+                )
+                return "ok"
+
+            # Creep at the current tip height (no lower-to-bottle step).
+            tip_r = math.hypot(float(tip0[0]), float(tip0[1]))
+            if tip_r < 0.16:
+                self._publish_status(
+                    "grasping", "Obstacle test — extending for reach…"
+                )
+                extended = False
+                for dist in (0.14, 0.18, 0.22, 0.12):
+                    ext = (
+                        float(tip0[0]) + dist * hx,
+                        float(tip0[1]) + dist * hy,
+                        float(tip0[2]),
+                    )
+                    if math.hypot(ext[0], ext[1]) < 0.12:
+                        continue
+                    st = _move_tip(ext, "extend")
+                    if st == "ok":
+                        extended = True
+                        break
+                    if st in ("fail", "cancel"):
+                        return
+                if not extended:
+                    self.get_logger().warn(
+                        "obstacle test: extend failed — creeping anyway"
+                    )
+            tip_r = math.hypot(float(tip0[0]), float(tip0[1]))
+            if tip_r > 0.22:
+                self._publish_status(
+                    "grasping", "Obstacle test — backing up for approach…"
+                )
+                target_r = 0.20
+                for back in (
+                    tip_r - target_r,
+                    tip_r - target_r + 0.02,
+                    0.12,
+                    0.08,
+                ):
+                    if back < 0.03:
+                        continue
+                    retreat = (
+                        float(tip0[0]) - back * hx,
+                        float(tip0[1]) - back * hy,
+                        float(tip0[2]),
+                    )
+                    if math.hypot(retreat[0], retreat[1]) < 0.12:
+                        continue
+                    st = _move_tip(retreat, "backup")
+                    if st == "ok":
+                        break
+                    if st in ("fail", "cancel"):
+                        return
+            creep_z = float(tip0[2])
+            waypoints: List[List[float]] = []
+            seed = q0
+            for i in range(1, 19):
+                dist = 0.01 * i
+                goal = (
+                    float(tip0[0]) + dist * hx,
+                    float(tip0[1]) + dist * hy,
+                    float(creep_z),
+                )
+                solved = self._solve_ik_nexarm(
+                    self._pose_at(goal, 0.0),
+                    prefer_seed=seed,
+                    pitch_pref=pitch,
+                    final_approach=True,
+                )
+                if solved is None:
+                    self.get_logger().warn(
+                        f"obstacle test IK stop at {dist:.2f} m"
+                    )
+                    break
+                waypoints.append(solved)
+                seed = solved
+            if not waypoints:
+                self._publish_status("error", "Obstacle test: no forward IK")
+                return
+            self.get_logger().info(
+                f"obstacle test creep {len(waypoints)} cm "
+                f"dir=({hx:.2f},{hy:.2f}) z={creep_z:.2f} "
+                f"pitch={math.degrees(pitch):.0f}° "
+                f"from ({float(tip0[0]):.3f},{float(tip0[1]):.3f},{float(tip0[2]):.3f})"
+            )
+            self._publish_status(
+                "grasping", "Obstacle test — creeping forward (gate on)…"
+            )
+            old = self.seg_dur
+            self.seg_dur = 1.4
+            self._obstacle_armed = True
+            self._obstacle_stop_reason = None
+            self._safety_trip = None
+            self._gate_arm_for_transit(None)
+            try:
+                ok = self._send_trajectory(waypoints, gen)
+            finally:
+                self._gate_disarm()
+                self._obstacle_armed = False
+                self.seg_dur = old
+            why = self._safety_trip or self._obstacle_stop_reason
+            if why:
+                self._publish_status("error", f"Obstacle — gate: {why}")
+                return
+            if not ok or self._is_cancelled(gen):
+                self._publish_status("cancelled", "Obstacle test cancelled")
+                return
+            self._publish_status(
+                "done", "Obstacle test finished — gate clear through creep"
+            )
+        except Exception as exc:
+            self.get_logger().error(f"obstacle test: {exc}")
+            self._publish_status("error", f"Obstacle test failed: {exc}")
+        finally:
+            with self._lock:
+                if gen == self._run_gen:
+                    self._busy = False
 
     def _named_joints(self, name: str) -> List[float]:
         if name == "sleep":
@@ -7794,7 +13074,10 @@ class GraspFromClick(Node):
     def _scripted_pinch_and_lift(
         self, gen: int, q_hold, hold_xyz, toward_xyz, click_xyz
     ):
-        """Close at the pose already reached. One 1 cm retry on a miss."""
+        """Close at the pose already reached. One 1 cm retry on a miss.
+
+        NexArm: no +1 cm retry — reopen and back off to the look pose instead.
+        """
         self._hold_gripper_open = False
         self._publish_status(
             "grasping", "Closing at the reached pose…", click_xyz
@@ -7804,6 +13087,26 @@ class GraspFromClick(Node):
             self._publish_status("cancelled", "Cancelled after close", hold_xyz)
             return
         if close_why not in ("load", "foam"):
+            if getattr(self, "_nexarm", False):
+                # Skip the PX150 +1 cm retry — reopen and retreat to look pose.
+                self.get_logger().info(
+                    f"nexarm pinch miss ({close_why}) — reopen + back off"
+                )
+                self._gripper_reopen(gen, timeout=1.5)
+                look_q = getattr(self, "_nexarm_look_q", None)
+                if look_q is not None:
+                    try:
+                        self._send_trajectory(
+                            [[float(v) for v in look_q]], gen
+                        )
+                    except Exception:
+                        pass
+                self._publish_status(
+                    "error",
+                    f"Pinch missed ({close_why}) — jaws reopened",
+                    hold_xyz,
+                )
+                return
             q2 = self._retry_forward(gen, toward_xyz, q_hold)
             if q2 is None:
                 if self._is_cancelled(gen):
@@ -8124,27 +13427,115 @@ class GraspFromClick(Node):
                 return
 
             self._waist_face = None
-            click_xyz = tuple(self._viz_xyz or xyz)
-            # Overlay stays on the depth cube. IK puts the gripper bar on
-            # the click at click height, approaching along the table heading.
-            ik_xyz = self._reachable_grasp_xyz(click_xyz)
-            horiz0 = math.hypot(ik_xyz[0], ik_xyz[1])
-            contact_h = math.hypot(float(click_xyz[0]), float(click_xyz[1]))
-            standoff = float(self.grasp_standoff_m)
-            if self._object_low:
-                # The bar offset already sets the end effector behind the block.
-                # Only the block itself, not that offset, is "too close".
-                if contact_h < float(self.floor_min_ee_reach):
+            # Freeze base-frame goal before any pan/arm motion. Prefer the
+            # click-time snap so a later image UV cannot sink the point.
+            snap0 = self._nexarm_click_snap or {}
+            snap_xyz0 = snap0.get("xyz")
+            if (
+                isinstance(snap_xyz0, (tuple, list))
+                and len(snap_xyz0) >= 3
+                and all(math.isfinite(float(v)) for v in snap_xyz0[:3])
+            ):
+                click_xyz = (
+                    float(snap_xyz0[0]),
+                    float(snap_xyz0[1]),
+                    float(snap_xyz0[2]),
+                )
+            else:
+                click_xyz = tuple(self._viz_xyz or xyz)
+            self._nexarm_grasp_freeze = click_xyz
+            if getattr(self, "_nexarm", False):
+                # Measured open verify — GUI echoes are not enough.
+                if not self._wait_gripper_open_measured(gen, timeout_s=2.0):
                     self._hold_gripper_open = False
                     self._publish_status(
-                        "unreachable",
-                        f"Block is too close to the base (reach {contact_h:.2f}m)",
-                        xyz,
+                        "error",
+                        "Gripper did not open — check NexArm USB / direction",
+                        click_xyz,
                     )
                     return
-                room = horiz0 - float(self.floor_min_ee_reach)
-                standoff = min(standoff, max(0.0, room))
-            pre_xyz = self._standoff_xyz(ik_xyz, standoff)
+                self._shoulder_forward_only = False
+                self.get_logger().info(
+                    f"nexarm grasp start click="
+                    f"({click_xyz[0]:.3f},{click_xyz[1]:.3f},{click_xyz[2]:.3f}) "
+                    f"meas_g={self._gripper_meas} freeze=base"
+                )
+                # Pan stays at the click angle (frozen inside open-loop).
+                # Two IK solutions: pre-grasp standoff, then contact at TCP.
+                ee, why = self._nexarm_open_loop_grasp(gen, tuple(click_xyz))
+                if self._is_cancelled(gen) or why == "cancelled":
+                    self._hold_gripper_open = False
+                    self._publish_status("cancelled", "Cancelled", xyz)
+                    return
+                self._hold_gripper_open = False
+                self._nexarm_keep_open = False
+                if ee is None or why != "aligned":
+                    try:
+                        self._gripper_reopen(gen, timeout=1.5)
+                    except Exception:
+                        pass
+                    obs = self._obstacle_stop_reason
+                    if obs:
+                        self._publish_status(
+                            "error", f"Obstacle — stopped ({obs})", click_xyz
+                        )
+                        return
+                    self._publish_status(
+                        "error",
+                        f"NexArm open-loop failed: {why}"
+                        f"{'' if ee is None else f' tip_err={math.dist(ee, click_xyz):.3f}m'}",
+                        click_xyz,
+                    )
+                    return
+                q_now = [
+                    float(self._joint_pos.get(j, 0.0)) for j in self.arm_joints
+                ]
+                self._retreat_q = list(q_now)
+                self.get_logger().info(
+                    f"nexarm open-loop finished tip_ok "
+                    f"ee=({ee[0]:.3f},{ee[1]:.3f},{ee[2]:.3f}) "
+                    f"click=({click_xyz[0]:.3f},{click_xyz[1]:.3f},{click_xyz[2]:.3f}) "
+                    f"err={math.dist(ee, click_xyz):.3f}m"
+                    f"{' — approach_only (no pinch)' if self.nexarm_approach_only else ' — pinch'}"
+                )
+                if bool(getattr(self, "nexarm_approach_only", False)):
+                    gap = float(
+                        (self._nexarm_stop_plan or {}).get(
+                            "gap_m", self.nexarm_stop_gap_m
+                        )
+                    )
+                    self._publish_status(
+                        "done",
+                        f"Stopped: fingertips planned {gap*100:.1f} cm "
+                        f"from object face (no pinch)",
+                        click_xyz,
+                    )
+                    return
+                if self._act_closes:
+                    self._hand_off_act_close(tuple(click_xyz))
+                    return
+                self._scripted_pinch_and_lift(
+                    gen,
+                    q_now,
+                    tuple(ee),
+                    tuple(ee),
+                    tuple(click_xyz),
+                )
+                return
+            # Overlay stays on the depth cube. IK puts the gripper bar on
+            # the click at click height, approaching along the table heading.
+            if self._object_low:
+                # Jaws on the click. Hover 5 cm straight above, then descend.
+                ik_xyz = (
+                    float(click_xyz[0]),
+                    float(click_xyz[1]),
+                    float(click_xyz[2]),
+                )
+                pre_xyz = (ik_xyz[0], ik_xyz[1], ik_xyz[2] + 0.05)
+            else:
+                ik_xyz = self._reachable_grasp_xyz(click_xyz)
+                pre_xyz = self._standoff_xyz(ik_xyz, float(self.grasp_standoff_m))
+            horiz0 = math.hypot(ik_xyz[0], ik_xyz[1])
             # Extra hover Z shrinks the 4-DOF envelope — only use it up close.
             if (
                 not self._object_low
@@ -8179,11 +13570,8 @@ class GraspFromClick(Node):
                 return
             if q_pre is None:
                 self._hold_gripper_open = False
-                obj_h = math.hypot(float(click_xyz[0]), float(click_xyz[1]))
-                if obj_h < float(self.floor_min_ee_reach):
-                    why = "block is too close to the base"
-                else:
-                    why = "drive closer or click lower in the image"
+                reach = self._reach_phrase(tuple(click_xyz)) if self._object_low else None
+                why = reach or "drive closer or click lower in the image"
                 self._publish_status(
                     "unreachable",
                     f"IK failed at pre-grasp (reach {horiz:.2f}m) — {why}",
@@ -8207,6 +13595,15 @@ class GraspFromClick(Node):
                 return
             contact_goal = tuple(deep_xyz)
             short_of_contact = False
+            if q_grasp is None and self._object_low:
+                self._hold_gripper_open = False
+                self._publish_status(
+                    "unreachable",
+                    "Jaws cannot pitch down onto that floor point — "
+                    "move the base a few cm closer",
+                    xyz,
+                )
+                return
             if q_grasp is None:
                 # Contact IK can fail after the jaws are already on the pole.
                 # Close at the approach pose instead of pushing farther.
@@ -8246,6 +13643,9 @@ class GraspFromClick(Node):
                 )
                 return
             q_grasp = self._apply_align_joints(q_grasp)
+            if self._object_low:
+                q_pre = list(q_grasp)
+                pre_xyz = tuple(grasp_xyz)
             # How far short of the intended bar-on-click point?
             short_m = math.sqrt(
                 (float(grasp_xyz[0]) - float(contact_goal[0])) ** 2
@@ -8315,7 +13715,18 @@ class GraspFromClick(Node):
             self._publish_status("error", f"Grasp exception: {e}")
         finally:
             self._shoulder_forward_only = False
-            self._hold_gripper_open = False
+            keep_open = bool(getattr(self, "_nexarm_keep_open", False))
+            self._nexarm_keep_open = False
+            if keep_open:
+                self._hold_gripper_open = True
+                try:
+                    self._publish_gripper_joint(
+                        float(self.grip_joint_open), n=2
+                    )
+                except Exception:
+                    pass
+            else:
+                self._hold_gripper_open = False
             self._wide_sub_stop()
             self._restore_click_anchor()
             with self._lock:

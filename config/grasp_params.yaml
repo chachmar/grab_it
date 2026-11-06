@@ -63,11 +63,8 @@ grasp:
   wrist_align_refine_jaws: false # do not chase jaw-blob angle during range
   wrist_jaw_snap: true           # one ±90° snap if jaw silhouette is wider than tall
   click_depth_snapshot: true     # one aligned-depth frame per click (not a stream)
-  floor_object_max_z: 0.14       # planning Z below this → floor object (don't scoop wrist up)
-  floor_tcp_lift: 0.02           # TCP above measured object top for floor grasps
-  floor_z_min: -0.08              # planning frame zero is above the floor; jaws meet a block near -0.06
-  floor_sure_z: 0.08             # top below this stays a floor object in a tilted view
-  floor_min_ee_reach: 0.18       # do not pull a floor pre-grasp closer than this
+  floor_object_max_z: 0.14       # table-path height hint only; floor clicks use the support plane
+  floor_object_default_height: 0.04  # assumed object height when the click has no depth
   d435_jpeg_url: http://127.0.0.1:8081/d435i.jpg
   ik_prefer_current: true
   ik_budget_s: 6.0
@@ -118,7 +115,7 @@ grasp:
 
   # Workspace AABB in planning frame (reject clicks outside)
   # Lateral cal point was Y=-0.10 at z=0.30; allow left/right grasps.
-  workspace_min: [0.05, -0.35, -0.08]
+  workspace_min: [0.05, -0.35, -0.086]
   workspace_max: [0.42,  0.35, 0.38]
   max_horizontal_reach: 0.42
 
@@ -163,6 +160,123 @@ grasp:
   # false: Grasp at point closes with the scripted pinch (load or foam stall).
   # true: hand the reached pose to ACT. GRAB_IT_ACT_CLOSES overrides this.
   act_closes: false
+
+  # NexArm: click → IK pre-grasp → visual-servo final approach.
+  # TCP to jaw pads. Shortening to 0.010 made plan_approach fail; keep 0.025
+  # and close the remaining shortfall via mouth near-z fill + seat overshoot.
+  nexarm_tcp_m: 0.025
+  # Soft wrist_flex stop (follower rad). −1.35 was the measured fold extreme;
+  # further negative jams cam/gripper into the forearm.
+  nexarm_wrist_flex_min: -1.35
+  nexarm_wrist_flex_max: 2.09
+  # Prefer near-horizontal for front-face approach_only; steep kept for floor.
+  nexarm_pitches_deg: [0.0, -15.0, -30.0, -45.0, -60.0, -75.0, -90.0]
+  # Far + near standoffs (near needed for steep top-down pre-grasps).
+  nexarm_standoffs_m: [0.28, 0.24, 0.22, 0.20, 0.18, 0.14, 0.10]
+  nexarm_servo_step_m: 0.02
+  # Depth trust cutover; D435i often holes below ~0.18 m.
+  nexarm_servo_min_depth_m: 0.16
+  # Planned blind insert distance along approach.
+  nexarm_blind_m: 0.10
+  # If tracking is lost inside this range (or pred_z), force blind instead of abort.
+  nexarm_force_blind_m: 0.15
+  nexarm_servo_max_iters: 28
+  # Plan/replan can take ~10–20s; reset timer after replan too.
+  nexarm_servo_timeout_s: 90.0
+  # Pre-grasp UV must stay inside this margin of the image border.
+  nexarm_uv_margin: 0.20
+  nexarm_color_match_thr: 0.45
+  nexarm_color_search_win: 0.32
+  # Depth filter: trust XY more than Z (click Z is a soft prior).
+  nexarm_xy_gain: 0.60
+  nexarm_z_gain: 0.20
+  nexarm_z_clamp_m: 0.035
+  # After this measured depth, freeze p_hat XY (color no longer walks the aim).
+  nexarm_freeze_depth_m: 0.18
+  # Extra insert past the estimated surface along the approach axis.
+  nexarm_blind_overshoot_m: 0.015
+  # Color may keep tracking alive, but never updates p_hat (approach-parallax).
+  nexarm_color_updates_pose: false
+  # Tip collision: depth pixels that land in a slab ahead of the TCP.
+  # Height from arm FK; tilt from D435i IMU (servo/FK if accel is not ~1 g).
+  # Checked only while the tip advances along the tool axis.
+  nexarm_obstacle_stop: true
+  nexarm_obstacle_use_imu: true
+  nexarm_obstacle_gap_m: 0.03       # stop when a surface is within 3 cm of the tip
+  nexarm_obstacle_thick_m: 0.02
+  nexarm_obstacle_radius_m: 0.04
+  nexarm_obstacle_min_pix: 40
+  nexarm_obstacle_roi_half_px: 36
+  nexarm_obstacle_z_min_m: 0.12
+  nexarm_obstacle_z_max_m: 0.80
+  nexarm_obstacle_imu_topic: /d435i/d435i/imu
+  # Stop-pose approach (fingertip gap + transit gate).
+  nexarm_fingertip_m: 0.046
+  nexarm_stop_gap_m: 0.03
+  nexarm_pre_back_m: 0.15
+  nexarm_gate_trip_m: 0.20
+  nexarm_gate_min_pix: 150
+  nexarm_gate_hole_jump: 0.25
+  nexarm_corridor_margin_m: 0.015
+  # Open-loop grasp: depth+FK unprojection → stop plan → transit gate → hold.
+  # Mouth / jaw-edge / seat / in-gripper creep are unused on this path.
+  nexarm_approach_only: true
+  nexarm_pinch_after_approach: false
+  nexarm_pinch_jaw_bias_m: 0.0
+  nexarm_pinch_force_left_m: 0.0
+  nexarm_pinch_during_seat: false
+  nexarm_front_standoff_m: 0.10
+  nexarm_align_look_s_m: 0.24
+  nexarm_jaw_gap_m: 0.050
+  nexarm_depth_jaw_align: false
+  nexarm_final_depth_stop_m: 0.14
+  nexarm_final_step_m: 0.010
+  nexarm_front_uv_u: 0.50
+  nexarm_front_uv_v: 0.45
+  nexarm_front_jaw_bias_m: 0.0
+  nexarm_front_center_iters: 16
+  # Pan at click / approach angle stays fixed for the whole open-loop move.
+  nexarm_pan_approach_rad: 0.55
+  nexarm_pan_final_rad: 0.55
+  nexarm_pan_mid_rad: 0.55
+  nexarm_pan_blend_s0_m: 0.14
+  nexarm_pan_blend_s1_m: 0.035
+  nexarm_jaw_edge_stop: false
+  nexarm_jaw_edge_u0: 0.38
+  nexarm_jaw_edge_u1: 0.62
+  nexarm_jaw_edge_v0: 0.22
+  nexarm_jaw_edge_v1: 0.62
+  nexarm_jaw_edge_z_min: 0.045
+  nexarm_jaw_edge_z_max: 0.20
+  nexarm_jaw_edge_min_pix: 25
+  nexarm_jaw_edge_uv_u: 0.50
+  nexarm_jaw_edge_uv_v: 0.40
+  nexarm_mouth_stop: false
+  nexarm_mouth_u0: 0.44
+  nexarm_mouth_u1: 0.74
+  nexarm_mouth_v0: 0.32
+  nexarm_mouth_v1: 0.88
+  nexarm_mouth_z_min: 0.05
+  nexarm_mouth_z_max: 0.22
+  nexarm_mouth_z_abs_max: 0.35
+  nexarm_mouth_elev_m: 0.035
+  nexarm_mouth_min_pix: 35
+  nexarm_mouth_min_frac: 0.10
+  nexarm_mouth_near_z_max: 0.20
+  nexarm_engulf_s_m: 0.060
+  nexarm_pinch_seat_m: 0.0
+  nexarm_seat_floor_m: 0.0
+  nexarm_seat_z_drop_m: 0.0
+  nexarm_in_gripper_advance: false
+  nexarm_in_gripper_floor_m: 0.022
+  nexarm_in_gripper_depth_m: 0.13
+  # Physical NexArm jaws: bus cmd 0.025 ≈ open, 0.0 ≈ closed (teleop demos +
+  # live approach). Grasp node only — GUI/arm_profile labels stay as-is.
+  nexarm_grip_open: 0.025
+  nexarm_grip_closed: 0.0
+  # Soft plush compresses near closed — keep empty band tight so foam stall
+  # in [empty, ~75% closed] can register before the hard-close stop.
+  nexarm_grip_empty_band: 0.003
   # No farther push — pitch/mount live in the URDF now.
   grasp_farther_m: 0.0
   grasp_deeper_m: 0.00
